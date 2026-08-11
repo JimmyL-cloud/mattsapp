@@ -1,0 +1,25 @@
+.panel-heading,
+.terminal-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.panel-heading span {
+  color: var(--muted);
+}
+
+.terminal-actions {
+  justify-content: flex-start;
+}
+
+.terminal-actions a {
+  display: inline-block;
+  border: 1px solid var(--line);
+  background: #030604;
+  color: var(--green);
+  padding: 6px 10px;
+  font: inherit;
+  font-weight: 800;
+}

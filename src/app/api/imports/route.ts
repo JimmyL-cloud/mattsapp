@@ -1,0 +1,51 @@
+import { NextResponse, type NextRequest } from 'next/server';
+import { z } from 'zod';
+import { CsvImportService } from '@/features/imports/import-service';
+import {
+  InMemoryMarketRecordRepository,
+  PostgresMarketRecordRepository,
+  type MarketRecordRepository,
+} from '@/lib/db/repositories/market-records';
+import { databaseIsConfigured, getDatabase } from '@/lib/db/client';
+import { getOwnerSessionFromHeaders } from '@/lib/auth/config';
+
+const requestSchema = z.object({
+  csv: z.string().min(1).max(10_000_000),
+  sourceKey: z.string().regex(/^[a-z0-9][a-z0-9-]{1,63}$/),
+  sourceLabel: z.string().trim().min(1).max(200),
+  isDemo: z.boolean(),
+});
+
+const runtime = globalThis as typeof globalThis & {
+  __mattsappMarketRepository?: MarketRecordRepository;
+};
+const repository = runtime.__mattsappMarketRepository ?? (
+  databaseIsConfigured()
+    ? new PostgresMarketRecordRepository(getDatabase())
+    : new InMemoryMarketRecordRepository()
+);
+runtime.__mattsappMarketRepository = repository;
+
+export async function POST(request: NextRequest) {
+  const owner = await getOwnerSessionFromHeaders(request.headers);
+  if (!owner) {
+    return NextResponse.json({ error: 'Owner authentication required' }, { status: 401 });
+  }
+
+  const parsed = requestSchema.safeParse(await request.json().catch(() => null));
+  if (!parsed.success) {
+    return NextResponse.json(
+      { error: 'Invalid import request', details: parsed.error.flatten() },
+      { status: 400 },
+    );
+  }
+
+  const now = new Date().toISOString();
+  const report = await new CsvImportService(repository).importCsv({
+    ...parsed.data,
+    userId: owner.id,
+    importedAt: now,
+    now,
+  });
+  return NextResponse.json(report);
+}

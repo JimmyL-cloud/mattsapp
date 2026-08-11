@@ -1,0 +1,75 @@
+.scanner-grid {
+  display: grid;
+  grid-template-columns: 250px minmax(0, 1fr);
+  gap: 8px;
+}
+
+.filter-bank {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.filter-bank label {
+  display: grid;
+  gap: 3px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.filter-bank input,
+.filter-bank select,
+.filter-bank button {
+  min-width: 0;
+  border: 1px solid var(--line);
+  background: #030604;
+  color: var(--text);
+  padding: 5px;
+  font: inherit;
+}
+
+.filter-bank button {
+  color: var(--green);
+  cursor: pointer;
+  font-weight: 800;
+}
+
+.filter-bank .inline-check {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.filter-bank .inline-check input {
+  width: auto;
+}
+
+.scanner-title {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.scanner-title strong {
+  color: var(--green);
+  white-space: nowrap;
+}
+
+.scanner-table {
+  padding: 0;
+}
+
+.scanner-table table {
+  min-width: 1320px;
+}
+
+.scanner-table td,
+.scanner-table th {
+  white-space: nowrap;
+}
+
+@media (max-width: 900px) {
+  .scanner-grid {
+    grid-template-columns: 1fr;
+  }
+}

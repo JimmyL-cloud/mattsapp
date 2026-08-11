@@ -1,0 +1,52 @@
+{
+  "name": "mattsapp",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "node --require ./scripts/memory-usage-shim.cjs ./node_modules/next/dist/bin/next dev -H 127.0.0.1",
+    "build": "node --require ./scripts/memory-usage-shim.cjs ./node_modules/next/dist/bin/next build",
+    "start": "node --require ./scripts/memory-usage-shim.cjs ./node_modules/next/dist/bin/next start -H 127.0.0.1",
+    "lint": "eslint .",
+    "test": "vitest",
+    "test:coverage": "vitest --run --coverage",
+    "test:e2e": "playwright test",
+    "typecheck": "tsc --noEmit",
+    "db:generate": "node --env-file-if-exists=.env --env-file-if-exists=.env.local ./node_modules/drizzle-kit/bin.cjs generate",
+    "db:migrate": "node --env-file-if-exists=.env --env-file-if-exists=.env.local ./node_modules/drizzle-kit/bin.cjs migrate",
+    "db:seed": "node --env-file-if-exists=.env --env-file-if-exists=.env.local scripts/seed.mjs",
+    "verify": "node scripts/verify.mjs"
+  },
+  "dependencies": {
+    "@better-auth/drizzle-adapter": "1.6.26",
+    "@neondatabase/serverless": "1.0.2",
+    "@tanstack/react-table": "latest",
+    "better-auth": "latest",
+    "csv-parse": "6.1.0",
+    "decimal.js": "latest",
+    "drizzle-orm": "latest",
+    "next": "latest",
+    "postgres": "latest",
+    "react": "latest",
+    "react-dom": "latest",
+    "recharts": "latest",
+    "zod": "latest"
+  },
+  "devDependencies": {
+    "@electric-sql/pglite": "0.5.4",
+    "@playwright/test": "latest",
+    "@testing-library/jest-dom": "latest",
+    "@testing-library/react": "latest",
+    "@types/node": "latest",
+    "@types/react": "latest",
+    "@types/react-dom": "latest",
+    "@vitest/coverage-v8": "latest",
+    "drizzle-kit": "latest",
+    "eslint": "9.39.1",
+    "eslint-config-next": "latest",
+    "jsdom": "latest",
+    "typescript": "5.9.3",
+    "vitest": "latest"
+  },
+  "packageManager": "pnpm@11.16.0"
+}
