@@ -1,5 +1,6 @@
 import type { Metadata } from 'next';
 import './globals.css';
+import './session-controls.css';
 
 export const metadata: Metadata = { title: 'mattsapp', description: 'Auditable football card market terminal' };
 

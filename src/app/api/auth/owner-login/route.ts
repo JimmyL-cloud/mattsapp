@@ -9,5 +9,5 @@ const credentials = z.object({
 export async function POST(request: Request) {
   const parsed = credentials.safeParse(await request.json().catch(() => null));
   if (!parsed.success) return Response.json({ error: 'Invalid owner credentials' }, { status: 401 });
-  return authenticateOwner(parsed.data);
+  return authenticateOwner(parsed.data, request.headers);
 }

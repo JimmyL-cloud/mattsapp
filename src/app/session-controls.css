@@ -1,0 +1,28 @@
+.terminal-header {
+  grid-template-columns: 160px 1fr auto;
+}
+
+.session-controls {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.logout-button {
+  border: 1px solid var(--line);
+  background: transparent;
+  color: var(--muted);
+  padding: 4px 7px;
+  cursor: pointer;
+}
+
+.logout-button:hover {
+  color: var(--green);
+  border-color: var(--green);
+}
+
+@media (max-width: 800px) {
+  .session-controls .status {
+    display: none;
+  }
+}
