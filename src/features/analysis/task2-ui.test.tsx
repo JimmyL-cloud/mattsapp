@@ -87,6 +87,7 @@ describe('Task 2 analysis UI contracts', () => {
     ];
     render(<AnalysisResultView initialAnalysis={analysis('analysis:audit', 'Audit Player', rawComps)} />);
     expect(screen.getByText(/AUTO: EXCLUDED · MANUAL: FORCE INCLUDE/)).toBeVisible();
+    expect(screen.getByText('AUTO REASONS: WRONG_PARALLEL')).toBeVisible();
     expect(screen.getByText('OVERRIDE: Trusted visual verification')).toBeVisible();
     expect(screen.getByText(/AUTO: INCLUDED · MANUAL: EXCLUDE/)).toBeVisible();
     expect(screen.getByText('OVERRIDE: Damaged copy')).toBeVisible();

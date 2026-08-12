@@ -138,3 +138,22 @@ Addressed every item in `private/task-2-review.md` (C1-C3, I1-I6, M1-M2).
 - No schema, migration, database, deployment, or secret changes were made.
 - Portfolio and Performance persistence remain Task 3. Task 2 deliberately presents the safe real-only Portfolio empty state rather than reading canonical analyses with an incompatible legacy model.
 - Authenticated production database/browser persistence was not exercised because this task remains explicitly database-free; mocked authenticated client routes plus server/page route tests cover the Task 2 transitions without external writes.
+
+## Fix Round 2 — 2026-08-12
+
+Addressed N1 from `private/task-2-re-review.md`.
+
+- Evidence ledger rows now render automatic matcher reasons as their own `AUTO REASONS` audit line for every comp, including manually overridden comps.
+- Manual action and exact owner override reason remain separate lines, so a force-included comp simultaneously shows `AUTO: EXCLUDED`, `MANUAL: FORCE INCLUDE`, the concrete automatic code (for example `WRONG_PARALLEL`), and the owner reason.
+- Extended `task2-ui.test.tsx` to require `AUTO REASONS: WRONG_PARALLEL` alongside `OVERRIDE: Trusted visual verification`.
+
+Verification:
+
+- `pnpm.cmd vitest run src/features/analysis/task2-ui.test.tsx` — passed, 1 file / 5 tests.
+- `pnpm.cmd lint` — passed.
+- `pnpm.cmd typecheck` — passed.
+- `pnpm.cmd test` — passed, 17 files / 36 tests.
+- `pnpm.cmd build` — passed.
+- `git diff --check` — passed; Windows line-ending conversion notices only.
+
+No database, deployment, schema, migration, or secret changes were made.
