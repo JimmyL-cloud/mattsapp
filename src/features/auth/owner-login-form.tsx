@@ -20,14 +20,17 @@ export function OwnerLoginForm({ ownerEmail }: { ownerEmail: string }) {
     setBusy(true);
     setError(null);
     const form = new FormData(event.currentTarget);
-    const response = await fetch('/api/auth/owner-login', {
-      method: 'POST', headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ email: ownerEmail, password: form.get('password') }),
-    });
-    if (response.ok) { router.push('/'); router.refresh(); }
-    else {
-      const body = await response.json().catch(() => ({ error: 'Authentication failed' }));
-      setError(typeof body.error === 'string' ? body.error : 'Authentication failed');
+    try {
+      const response = await fetch('/api/auth/owner-login', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ email: ownerEmail, password: form.get('password') }) });
+      if (!response.ok) {
+        const body = await response.json().catch(() => ({ error: 'Authentication failed' }));
+        throw new Error(typeof body.error === 'string' ? body.error : 'Authentication failed');
+      }
+      router.push('/');
+      router.refresh();
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : 'Network error. Check your connection and try again.');
+    } finally {
       setBusy(false);
     }
   }

@@ -55,4 +55,23 @@ describe('ManualAnalysisService', () => {
     });
     await expect(new ManualAnalysisService(repository).create('owner-1', missingReason)).rejects.toThrow('Override reason is required');
   });
+
+  it('uses structured comp identity and excludes a mismatched card instead of inheriting the target', async () => {
+    const repository = new InMemoryAnalysisWorkflowRepository();
+    const withMismatch = manualAnalysisRequestSchema.parse({
+      ...request,
+      comps: request.comps.map((comp, index) => index === 0 ? {
+        ...comp,
+        card: { playerName: 'Jayden Daniels', year: 2024, brand: 'Prizm', setName: 'Prizm', cardNumber: '101', raw: false, gradingCompanyKey: 'psa', grade: 10 },
+      } : {
+        ...comp,
+        card: { playerName: 'Caleb Williams', year: 2024, brand: 'Prizm', setName: 'Prizm', cardNumber: '101', raw: false, gradingCompanyKey: 'psa', grade: 10 },
+      }),
+    });
+    const analysis = await new ManualAnalysisService(repository).create('owner-1', withMismatch, new Date('2026-08-12T00:00:00Z'));
+    const rawComps = analysis.result.rawComps as Array<{ included: boolean; exclusionCodes: string[] }>;
+    expect(rawComps[0]).toMatchObject({ included: false });
+    expect(rawComps[0]?.exclusionCodes).toContain('WRONG_PLAYER');
+    expect(rawComps[1]).toMatchObject({ included: true });
+  });
 });

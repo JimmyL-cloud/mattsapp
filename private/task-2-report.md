@@ -101,3 +101,40 @@ Focused tests added:
 - No authenticated browser smoke test was performed because this task explicitly prohibited touching the database and a real owner session requires the configured auth database. Compile, unit, route, and production-build verification passed.
 - Portfolio/Performance end-to-end real-data completion and browser coverage remain Task 3 by plan.
 - Existing demo fixture/source modules remain for legacy unit coverage; they have no displayed runtime route. Removing them entirely would be a broader cleanup with test/export implications outside Task 2.
+
+## Fix Round 1 — 2026-08-12
+
+Addressed every item in `private/task-2-review.md` (C1-C3, I1-I6, M1-M2).
+
+### Critical-path corrections
+
+- C1: The manual comp repeater now collects player, year, brand, set, card number, parallel, raw/graded condition, grader, and grade for every comp. `buildManualAnalysisRequest` always sends that structured `card` object. The UI explicitly says structured fields drive matching and provides a deliberate `Use target identity` shortcut. `ManualAnalysisService` regression coverage proves a wrong-player comp produces `WRONG_PLAYER` and is excluded while the matching comp remains included.
+- C2: Analyze keys `AnalysisResultView` by `analysis.id`, remounting analysis, decision, watch-save, busy, and message state for every successful run. A mocked-route component test submits two distinct successful analyses and proves the second card replaces the first.
+- C3: `/portfolio` no longer sends canonical Task 1 manual-analysis snapshots through the incompatible legacy `PostgresTradingLedger` read model. Until Task 3 connects portfolio persistence, it renders the safe real-only empty state. A page test renders this boundary without database or legacy-loader access.
+
+### Audit, reliability, and accessibility corrections
+
+- I1: Evidence rows now show automatic eligibility, manual force-include/exclude state, and the exact owner override reason. Component coverage verifies forced include and forced exclude audit rows.
+- I2: Analyze, Login, analysis decisions/watchlist save, Settings load/save, Watchlist load/update/delete, and clipboard actions now handle rejected promises. Mutations use `try/catch/finally`; busy controls unlock; optimistic watchlist stars roll back; load failures render unavailable states with Retry rather than empty states.
+- I3: Watchlist note drafts are controlled per item with explicit `SAVING`, `SAVED`, and `NOT SAVED · ROLLED BACK` states. Failed responses restore both stored item state and the visible textarea value. Regression coverage verifies the rollback.
+- I4: Mobile More now moves focus to Close, traps forward/reverse Tab, closes on Escape, applies `inert` plus `aria-hidden` to header/main/bottom navigation, restores their prior state, and restores focus to the trigger. A component test covers focus entry, both trap directions, containment, Escape, and restoration.
+- I5: Watchlist filter options are generated from the canonical full `purchaseStatuses` enum, including `MISSED` and `CANCELLED`.
+- I6: Added meaningful component/page/route regression coverage for structured request payloads, mismatched comp exclusion, two-result replacement, Analyze/Login network recovery, override audit rendering, Watchlist optimistic/note rollback, unavailable/retry state, full status filters, modal focus behavior, active-route semantics, Portfolio safety, scanner redirect, and robots metadata.
+- M1: Comp duplicate/remove controls and password reveal have effective minimum 44px width and height; existing general icon controls remain 44px minimum.
+- M2: Active desktop/mobile links expose `aria-current="page"`; the active More destination and More trigger expose current state when applicable.
+
+### Fix Round 1 verification
+
+- Focused regressions: `pnpm.cmd vitest run src/features/analysis/manual-analysis-service.test.ts src/features/analysis/task2-ui.test.tsx src/features/analysis/watchlist-screen.test.tsx src/features/analysis/settings-screen.test.tsx src/components/terminal/app-navigation.test.tsx src/features/auth/owner-login-form.test.tsx src/app/portfolio/page.test.tsx src/app/route-semantics.test.ts` — passed, 8 files / 19 tests.
+- `pnpm.cmd lint` — passed, zero warnings/errors.
+- `pnpm.cmd typecheck` — passed.
+- `pnpm.cmd test` — passed, 17 files / 36 tests.
+- `pnpm.cmd build` — passed; production route manifest compiled successfully.
+- `git diff --check` — passed; Windows line-ending conversion notices only.
+
+### Fix Round 1 self-review and remaining boundary
+
+- Each reviewer finding was mapped to code plus direct regression evidence.
+- No schema, migration, database, deployment, or secret changes were made.
+- Portfolio and Performance persistence remain Task 3. Task 2 deliberately presents the safe real-only Portfolio empty state rather than reading canonical analyses with an incompatible legacy model.
+- Authenticated production database/browser persistence was not exercised because this task remains explicitly database-free; mocked authenticated client routes plus server/page route tests cover the Task 2 transitions without external writes.

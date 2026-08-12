@@ -36,34 +36,43 @@ export function AnalysisResultView({ initialAnalysis, onChange }: { initialAnaly
   async function decision(status: PurchaseStatus) {
     setBusyAction(status);
     setMessage(null);
-    const response = await fetch(`/api/analyses/${encodeURIComponent(analysis.id)}`, {
-      method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ status }),
-    });
-    const body = await response.json().catch(() => ({}));
-    if (response.ok && body.analysis) {
+    try {
+      const response = await fetch(`/api/analyses/${encodeURIComponent(analysis.id)}`, { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ status }) });
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok || !body.analysis) throw new Error(typeof body.error === 'string' ? body.error : 'Could not save decision');
       setAnalysis(body.analysis as AnalysisRecord);
       onChange?.(body.analysis as AnalysisRecord);
       setMessage(`Decision saved: ${status}`);
-    } else setMessage(typeof body.error === 'string' ? body.error : 'Could not save decision');
-    setBusyAction(null);
+    } catch (caught) {
+      setMessage(caught instanceof Error ? caught.message : 'Network error; decision was not changed.');
+    } finally {
+      setBusyAction(null);
+    }
   }
 
   async function saveWatchlist() {
     setBusyAction('WATCHLIST');
     setMessage(null);
-    const response = await fetch('/api/watchlist', {
-      method: 'POST', headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ cardId: analysis.cardId, notes: `Analysis ${analysis.id}`, isStarred: false }),
-    });
-    const body = await response.json().catch(() => ({}));
-    if (response.ok) setWatchSaved(true);
-    setMessage(response.ok ? 'Saved to watchlist' : typeof body.error === 'string' ? body.error : 'Could not save to watchlist');
-    setBusyAction(null);
+    try {
+      const response = await fetch('/api/watchlist', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ cardId: analysis.cardId, notes: `Analysis ${analysis.id}`, isStarred: false }) });
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(typeof body.error === 'string' ? body.error : 'Could not save to watchlist');
+      setWatchSaved(true);
+      setMessage('Saved to watchlist');
+    } catch (caught) {
+      setMessage(caught instanceof Error ? caught.message : 'Network error; the card was not saved.');
+    } finally {
+      setBusyAction(null);
+    }
   }
 
   async function copyAnalysis() {
-    await navigator.clipboard.writeText(JSON.stringify(analysis, null, 2));
-    setMessage('Analysis JSON copied');
+    try {
+      await navigator.clipboard.writeText(JSON.stringify(analysis, null, 2));
+      setMessage('Analysis JSON copied');
+    } catch {
+      setMessage('Clipboard access failed.');
+    }
   }
 
   return <div className="analysis-grid result-grid">
@@ -105,7 +114,10 @@ export function AnalysisResultView({ initialAnalysis, onChange }: { initialAnaly
 
     <section className="panel wide table-scroll" id="raw-comps"><div className="panel-heading"><h2>Evidence Ledger</h2><span>{comps.length} MANUAL RECORDS</span></div><table><thead><tr><th>Source / Listing</th><th>Date</th><th>Observed all-in</th><th>Match</th><th>Age</th><th>Status / Reasons</th></tr></thead><tbody>{comps.map((comp, index) => {
       const record = object(comp.record); const match = object(comp.match); const observed = object(comp.observedAllIn); const reasons = list(comp.exclusionCodes).map(String);
-      return <tr key={text(record.id, String(index))}><td>{text(record.sourceLabel)}<small>{text(record.listingTitle)}</small></td><td>{text(record.occurredAt).slice(0, 10)}</td><td>{money(observed.minor, currency)}</td><td>{(number(match.total) * 100).toFixed(0)}%</td><td>{number(comp.ageDays)}d</td><td className={comp.included === true ? 'positive' : 'amber'}>{comp.included === true ? 'INCLUDED' : 'EXCLUDED'}<small>{reasons.length ? reasons.join(' · ') : 'NO EXCLUSIONS'}</small></td></tr>;
+      const wasOverridden = typeof comp.manuallyIncluded === 'boolean';
+      const automatic = comp.automaticallyIncluded === true ? 'AUTO: INCLUDED' : 'AUTO: EXCLUDED';
+      const manual = wasOverridden ? `MANUAL: ${comp.manuallyIncluded === true ? 'FORCE INCLUDE' : 'EXCLUDE'}` : 'MANUAL: NONE';
+      return <tr key={text(record.id, String(index))}><td>{text(record.sourceLabel)}<small>{text(record.listingTitle)}</small></td><td>{text(record.occurredAt).slice(0, 10)}</td><td>{money(observed.minor, currency)}</td><td>{(number(match.total) * 100).toFixed(0)}%</td><td>{number(comp.ageDays)}d</td><td className={comp.included === true ? 'positive' : 'amber'}>{comp.included === true ? 'INCLUDED' : 'EXCLUDED'}<small>{automatic} · {manual}</small><small>{wasOverridden ? `OVERRIDE: ${text(comp.overrideReason, 'REASON MISSING')}` : reasons.length ? reasons.join(' · ') : 'NO EXCLUSIONS'}</small></td></tr>;
     })}</tbody></table></section>
 
     <section className="panel wide table-scroll" id="calculation-tape"><div className="panel-heading"><h2>Calculation Tape</h2><span>FORMULA {text(result.formulaVersion)}</span></div><table><thead><tr><th># / Step</th><th>Formula</th><th>Output</th></tr></thead><tbody>{calculations.map((calculation, index) => <tr key={text(calculation.key, String(index))}><td>{number(calculation.sequence, index + 1)} · {text(calculation.label)}</td><td>{text(calculation.formula)}</td><td>{formattedOutput(calculation.output, text(calculation.unit, ''), currency)}</td></tr>)}</tbody></table></section>

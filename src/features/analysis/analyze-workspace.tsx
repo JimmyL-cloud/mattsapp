@@ -4,8 +4,13 @@ import { useRef, useState, type FormEvent } from 'react';
 import { AnalysisResultView } from './analysis-result';
 import type { AnalysisRecord } from './analysis-record';
 
-type CompForm = { id: number; sourceLabel: string; listingTitle: string; occurredAt: string; salePrice: string; shipping: string; selection: 'AUTO' | 'INCLUDE' | 'EXCLUDE'; overrideReason: string };
-type FormState = {
+export type CompForm = {
+  id: number; sourceLabel: string; listingTitle: string; occurredAt: string; salePrice: string; shipping: string;
+  playerName: string; year: string; brand: string; setName: string; cardNumber: string; parallel: string;
+  condition: 'RAW' | 'GRADED'; gradingCompanyKey: string; grade: string;
+  selection: 'AUTO' | 'INCLUDE' | 'EXCLUDE'; overrideReason: string;
+};
+export type FormState = {
   playerName: string; year: string; brand: string; setName: string; cardNumber: string; parallel: string;
   condition: 'RAW' | 'GRADED'; gradingCompanyKey: string; grade: string;
   askingPrice: string; shipping: string; tax: string; gradingCost: string; sellingFeePercent: string; sellingFlatFee: string;
@@ -14,10 +19,27 @@ type FormState = {
 
 let nextCompId = 1;
 const todayInput = () => { const date = new Date(); date.setMinutes(date.getMinutes() - date.getTimezoneOffset()); return date.toISOString().slice(0, 10); };
-const blankComp = (): CompForm => ({ id: nextCompId++, sourceLabel: '', listingTitle: '', occurredAt: todayInput(), salePrice: '', shipping: '0', selection: 'AUTO', overrideReason: '' });
+const blankComp = (): CompForm => ({ id: nextCompId++, sourceLabel: '', listingTitle: '', occurredAt: todayInput(), salePrice: '', shipping: '0', playerName: '', year: '', brand: '', setName: '', cardNumber: '', parallel: '', condition: 'RAW', gradingCompanyKey: '', grade: '', selection: 'AUTO', overrideReason: '' });
 const initial: FormState = { playerName: '', year: '', brand: '', setName: '', cardNumber: '', parallel: '', condition: 'RAW', gradingCompanyKey: '', grade: '', askingPrice: '', shipping: '0', tax: '0', gradingCost: '0', sellingFeePercent: '13', sellingFlatFee: '0.30', returnAllowancePercent: '2', targetRoiPercent: '', holdingDays: '90' };
 const dollars = (value: string) => Math.round(Number(value || '0') * 100);
 const percentBps = (value: string) => Math.round(Number(value || '0') * 100);
+
+export function buildManualAnalysisRequest(form: FormState, comps: CompForm[]) {
+  const costs = [
+    { key: 'tax', label: 'Sales tax / acquisition costs', amountMinor: dollars(form.tax) },
+    { key: 'grading', label: 'Grading cost', amountMinor: dollars(form.gradingCost) },
+  ].filter((cost) => cost.amountMinor > 0);
+  return {
+    card: { sport: 'football', playerName: form.playerName, year: Number(form.year), brand: form.brand || null, setName: form.setName || null, cardNumber: form.cardNumber || null, parallel: form.parallel || null, raw: form.condition === 'RAW', gradingCompanyKey: form.condition === 'GRADED' ? form.gradingCompanyKey : null, grade: form.condition === 'GRADED' ? Number(form.grade) : null },
+    currency: 'USD', offer: { kind: 'FIXED_PRICE', priceMinor: dollars(form.askingPrice), shippingMinor: dollars(form.shipping), buyerPremiumBps: 0 },
+    comps: comps.map((comp) => ({
+      sourceLabel: comp.sourceLabel, listingTitle: comp.listingTitle, occurredAt: new Date(`${comp.occurredAt}T00:00:00Z`).toISOString(), salePriceMinor: dollars(comp.salePrice), shippingMinor: dollars(comp.shipping),
+      card: { sport: 'football', playerName: comp.playerName, year: Number(comp.year), brand: comp.brand || null, setName: comp.setName || null, cardNumber: comp.cardNumber || null, parallel: comp.parallel || null, raw: comp.condition === 'RAW', gradingCompanyKey: comp.condition === 'GRADED' ? comp.gradingCompanyKey : null, grade: comp.condition === 'GRADED' ? Number(comp.grade) : null },
+      ...(comp.selection === 'AUTO' ? {} : { included: comp.selection === 'INCLUDE', overrideReason: comp.overrideReason }),
+    })),
+    acquisitionCosts: costs, fixedSellingCosts: [], sellingFeeBps: percentBps(form.sellingFeePercent), sellingFlatFeeMinor: dollars(form.sellingFlatFee), returnAllowanceBps: percentBps(form.returnAllowancePercent), ...(form.targetRoiPercent ? { targetRoiBps: percentBps(form.targetRoiPercent) } : {}), holdingDays: Number(form.holdingDays),
+  };
+}
 
 export function AnalyzeWorkspace() {
   const [form, setForm] = useState(initial);
@@ -31,37 +53,29 @@ export function AnalyzeWorkspace() {
   const updateComp = (id: number, patch: Partial<CompForm>) => setComps((current) => current.map((comp) => comp.id === id ? { ...comp, ...patch } : comp));
   const removeComp = (id: number) => setComps((current) => current.length > 1 ? current.filter((comp) => comp.id !== id) : current);
   const duplicateComp = (source: CompForm) => setComps((current) => [...current, { ...source, id: nextCompId++ }]);
-
-  function requestBody() {
-    const costs = [
-      { key: 'tax', label: 'Sales tax / acquisition costs', amountMinor: dollars(form.tax) },
-      { key: 'grading', label: 'Grading cost', amountMinor: dollars(form.gradingCost) },
-    ].filter((cost) => cost.amountMinor > 0);
-    return {
-      card: { sport: 'football', playerName: form.playerName, year: Number(form.year), brand: form.brand || null, setName: form.setName || null, cardNumber: form.cardNumber || null, parallel: form.parallel || null, raw: form.condition === 'RAW', gradingCompanyKey: form.condition === 'GRADED' ? form.gradingCompanyKey : null, grade: form.condition === 'GRADED' ? Number(form.grade) : null },
-      currency: 'USD', offer: { kind: 'FIXED_PRICE', priceMinor: dollars(form.askingPrice), shippingMinor: dollars(form.shipping), buyerPremiumBps: 0 },
-      comps: comps.map((comp) => ({ sourceLabel: comp.sourceLabel, listingTitle: comp.listingTitle, occurredAt: new Date(`${comp.occurredAt}T00:00:00Z`).toISOString(), salePriceMinor: dollars(comp.salePrice), shippingMinor: dollars(comp.shipping), ...(comp.selection === 'AUTO' ? {} : { included: comp.selection === 'INCLUDE', overrideReason: comp.overrideReason }) })),
-      acquisitionCosts: costs, fixedSellingCosts: [], sellingFeeBps: percentBps(form.sellingFeePercent), sellingFlatFeeMinor: dollars(form.sellingFlatFee), returnAllowanceBps: percentBps(form.returnAllowancePercent), ...(form.targetRoiPercent ? { targetRoiBps: percentBps(form.targetRoiPercent) } : {}), holdingDays: Number(form.holdingDays),
-    };
-  }
+  const copyTargetIdentity = (id: number) => updateComp(id, { playerName: form.playerName, year: form.year, brand: form.brand, setName: form.setName, cardNumber: form.cardNumber, parallel: form.parallel, condition: form.condition, gradingCompanyKey: form.gradingCompanyKey, grade: form.grade });
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (busy) return;
     setError(null);
     if (comps.some((comp) => comp.selection !== 'AUTO' && !comp.overrideReason.trim())) { setError('Every manual include or exclude override needs a reason. Your form values are preserved.'); return; }
-    const body = requestBody();
+    const body = buildManualAnalysisRequest(form, comps);
     const signature = JSON.stringify(body);
     if (signature === lastSubmitted.current) { setError('This exact analysis was already submitted. Change an input before running it again.'); return; }
     setBusy(true);
-    const response = await fetch('/api/analyses', { method: 'POST', headers: { 'content-type': 'application/json' }, body: signature });
-    const payload = await response.json().catch(() => ({}));
-    if (response.ok && payload.analysis) {
+    try {
+      const response = await fetch('/api/analyses', { method: 'POST', headers: { 'content-type': 'application/json' }, body: signature });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok || !payload.analysis) throw new Error(typeof payload.error === 'string' ? payload.error : 'Analysis could not be completed. Your form values are preserved.');
       lastSubmitted.current = signature;
       setAnalysis(payload.analysis as AnalysisRecord);
       window.setTimeout(() => document.getElementById('analysis-result')?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 0);
-    } else setError(typeof payload.error === 'string' ? payload.error : 'Analysis could not be completed. Your form values are preserved.');
-    setBusy(false);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : 'Network error. Your form values are preserved; retry when connected.');
+    } finally {
+      setBusy(false);
+    }
   }
 
   return <div className="analyze-workspace">
@@ -94,15 +108,20 @@ export function AnalyzeWorkspace() {
         </div>
       </section>
 
-      <section className="panel form-section comps-section"><div className="section-number">03</div><div className="comps-heading"><div><h2>Manual comparison sales</h2><p className="muted">Enter sold evidence for the same card. Verify each source yourself.</p></div><button className="secondary-button" type="button" onClick={() => setComps((current) => [...current, blankComp()])}>+ Add comp</button></div>
+      <section className="panel form-section comps-section"><div className="section-number">03</div><div className="comps-heading"><div><h2>Manual comparison sales</h2><p className="muted">Enter each sold card&apos;s structured identity. Automatic matching uses these fields, not the listing title.</p></div><button className="secondary-button" type="button" onClick={() => setComps((current) => [...current, blankComp()])}>+ Add comp</button></div>
         <div className="comp-list">{comps.map((comp, index) => <fieldset className="comp-card" key={comp.id}><legend>COMP {String(index + 1).padStart(2, '0')}</legend><div className="comp-actions"><button className="icon-button" type="button" onClick={() => duplicateComp(comp)} aria-label={`Duplicate comp ${index + 1}`} title="Duplicate comp">⧉</button><button className="icon-button" type="button" onClick={() => removeComp(comp.id)} aria-label={`Remove comp ${index + 1}`} disabled={comps.length === 1}>×</button></div>
-          <div className="form-grid"><label className="field">Source label<input value={comp.sourceLabel} onChange={(event) => updateComp(comp.id, { sourceLabel: event.target.value })} placeholder="Card show receipt" required /></label><label className="field field-span-2">Listing / receipt description<input value={comp.listingTitle} onChange={(event) => updateComp(comp.id, { listingTitle: event.target.value })} required /></label><label className="field">Sale date<input type="date" max={todayInput()} value={comp.occurredAt} onChange={(event) => updateComp(comp.id, { occurredAt: event.target.value })} required /></label><label className="field">Sold price ($)<input type="number" min="0.01" step="0.01" inputMode="decimal" value={comp.salePrice} onChange={(event) => updateComp(comp.id, { salePrice: event.target.value })} required /></label><label className="field">Buyer shipping ($)<input type="number" min="0" step="0.01" inputMode="decimal" value={comp.shipping} onChange={(event) => updateComp(comp.id, { shipping: event.target.value })} required /></label><label className="field">Evidence selection<select value={comp.selection} onChange={(event) => updateComp(comp.id, { selection: event.target.value as CompForm['selection'] })}><option value="AUTO">Use matching rules</option><option value="INCLUDE">Force include</option><option value="EXCLUDE">Exclude</option></select></label>{comp.selection !== 'AUTO' ? <label className="field field-span-2">Override reason<input value={comp.overrideReason} onChange={(event) => updateComp(comp.id, { overrideReason: event.target.value })} required /></label> : null}</div>
+          <div className="comp-identity-heading"><h3>Sold card identity</h3><button className="secondary-button" type="button" onClick={() => copyTargetIdentity(comp.id)}>Use target identity</button></div>
+          <div className="form-grid">
+            <label className="field">Source label<input value={comp.sourceLabel} onChange={(event) => updateComp(comp.id, { sourceLabel: event.target.value })} placeholder="Card show receipt" required /></label><label className="field field-span-2">Listing / receipt description<input value={comp.listingTitle} onChange={(event) => updateComp(comp.id, { listingTitle: event.target.value })} required /></label><label className="field">Sale date<input type="date" max={todayInput()} value={comp.occurredAt} onChange={(event) => updateComp(comp.id, { occurredAt: event.target.value })} required /></label><label className="field">Sold price ($)<input type="number" min="0.01" step="0.01" inputMode="decimal" value={comp.salePrice} onChange={(event) => updateComp(comp.id, { salePrice: event.target.value })} required /></label><label className="field">Buyer shipping ($)<input type="number" min="0" step="0.01" inputMode="decimal" value={comp.shipping} onChange={(event) => updateComp(comp.id, { shipping: event.target.value })} required /></label>
+            <label className="field">Comp player name<input aria-label={`Comp ${index + 1} player name`} value={comp.playerName} onChange={(event) => updateComp(comp.id, { playerName: event.target.value })} required /></label><label className="field">Comp year<input aria-label={`Comp ${index + 1} year`} type="number" min="1800" max="2200" value={comp.year} onChange={(event) => updateComp(comp.id, { year: event.target.value })} required /></label><label className="field">Comp brand<input aria-label={`Comp ${index + 1} brand`} value={comp.brand} onChange={(event) => updateComp(comp.id, { brand: event.target.value })} /></label><label className="field">Comp set<input aria-label={`Comp ${index + 1} set`} value={comp.setName} onChange={(event) => updateComp(comp.id, { setName: event.target.value })} /></label><label className="field">Comp card #<input aria-label={`Comp ${index + 1} card number`} value={comp.cardNumber} onChange={(event) => updateComp(comp.id, { cardNumber: event.target.value })} /></label><label className="field">Comp parallel<input aria-label={`Comp ${index + 1} parallel`} value={comp.parallel} onChange={(event) => updateComp(comp.id, { parallel: event.target.value })} /></label><label className="field">Comp condition<select aria-label={`Comp ${index + 1} condition`} value={comp.condition} onChange={(event) => updateComp(comp.id, { condition: event.target.value as CompForm['condition'] })}><option value="RAW">Raw</option><option value="GRADED">Graded</option></select></label>{comp.condition === 'GRADED' ? <><label className="field">Comp grader<input aria-label={`Comp ${index + 1} grader`} value={comp.gradingCompanyKey} onChange={(event) => updateComp(comp.id, { gradingCompanyKey: event.target.value })} required /></label><label className="field">Comp grade<input aria-label={`Comp ${index + 1} grade`} type="number" min="0" max="100" step="0.5" value={comp.grade} onChange={(event) => updateComp(comp.id, { grade: event.target.value })} required /></label></> : null}
+            <label className="field">Evidence selection<select value={comp.selection} onChange={(event) => updateComp(comp.id, { selection: event.target.value as CompForm['selection'] })}><option value="AUTO">Use structured matching rules</option><option value="INCLUDE">Force include</option><option value="EXCLUDE">Exclude</option></select></label>{comp.selection !== 'AUTO' ? <label className="field field-span-2">Override reason<input value={comp.overrideReason} onChange={(event) => updateComp(comp.id, { overrideReason: event.target.value })} required /></label> : null}
+          </div>
         </fieldset>)}</div>
       </section>
 
       <section className="submit-bar"><div><strong>Ready to run the evidence tape?</strong><span>Your inputs stay in place if validation or analysis fails.</span></div><button className="primary-button" type="submit" disabled={busy}>{busy ? 'ANALYZING…' : 'ANALYZE CARD →'}</button></section>
       {error ? <p className="notice error-box" role="alert">{error}</p> : null}
     </form>
-    {analysis ? <section id="analysis-result" className="analysis-result"><AnalysisResultView initialAnalysis={analysis} /></section> : null}
+    {analysis ? <section id="analysis-result" className="analysis-result"><AnalysisResultView key={analysis.id} initialAnalysis={analysis} /></section> : null}
   </div>;
 }
