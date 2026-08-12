@@ -313,6 +313,7 @@ export const analyses = pgTable(
     cutoff: timestamp('cutoff', { withTimezone: true }).notNull(),
     currentPriceMinor: bigint('current_price_minor', { mode: 'bigint' }).notNull(),
     currency: text('currency').notNull(),
+    inputSnapshot: jsonb('input_snapshot').$type<Record<string, unknown>>().notNull().default({}),
     result: jsonb('result').$type<Record<string, unknown>>().notNull(),
     isDemo: boolean('is_demo').notNull().default(false),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
@@ -422,6 +423,20 @@ export const analysisComps = pgTable(
   (table) => [uniqueIndex('analysis_comps_analysis_record_idx').on(table.analysisId, table.marketRecordId)],
 );
 
+/** Immutable manual/CSV evidence snapshot used for a particular analysis. */
+export const analysisEvidence = pgTable(
+  'analysis_evidence',
+  {
+    id: text('id').primaryKey(),
+    analysisId: text('analysis_id').notNull().references(() => analyses.id, { onDelete: 'cascade' }),
+    sourceKind: text('source_kind').notNull(),
+    evidenceSnapshot: jsonb('evidence_snapshot').$type<Record<string, unknown>>().notNull(),
+    included: boolean('included').notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [index('analysis_evidence_analysis_idx').on(table.analysisId)],
+);
+
 export const calculationSteps = pgTable(
   'calculation_steps',
   {
@@ -508,12 +523,19 @@ export const watchlistItems = pgTable(
     cardCatalogItemId: text('card_catalog_item_id').references(() => cardCatalogItems.id),
     marketRecordId: text('market_record_id').references(() => normalizedMarketRecords.id),
     notes: text('notes'),
+    isStarred: boolean('is_starred').notNull().default(false),
     isDemo: boolean('is_demo').notNull().default(false),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     deletedAt: timestamp('deleted_at', { withTimezone: true }),
   },
   (table) => [index('watchlist_user_demo_idx').on(table.userId, table.isDemo)],
 );
+
+export const userSettings = pgTable('user_settings', {
+  userId: text('user_id').primaryKey().references(() => users.id, { onDelete: 'cascade' }),
+  targetRoiBps: integer('target_roi_bps').notNull().default(1_500),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+});
 
 export const portfolioHoldings = pgTable(
   'portfolio_holdings',
@@ -672,11 +694,13 @@ export const schemaEntities = {
   marketEvents,
   analyses,
   analysisComps,
+  analysisEvidence,
   calculationSteps,
   forecasts,
   predictionSnapshots,
   userDecisions,
   watchlistItems,
+  userSettings,
   portfolioHoldings,
   transactions,
   expenses,

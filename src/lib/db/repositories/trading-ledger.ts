@@ -154,6 +154,7 @@ export class PostgresTradingLedger<
       cutoff: asDate(snapshot.capturedAt),
       currentPriceMinor: snapshot.modelMaximumMinor,
       currency: snapshot.currency,
+      inputSnapshot: { cardId: snapshot.cardId },
       result: {
         cardLabel: snapshot.cardLabel,
         fairValueMinor: snapshot.fairValueMinor.toString(),

@@ -1,0 +1,164 @@
+import { randomUUID } from 'node:crypto';
+import { z } from 'zod';
+import { createCardIdentity, type CardIdentity, type CardIdentityInput } from '@/features/cards/card-identity';
+import { runAnalysis } from '@/features/analysis/run-analysis';
+import type { Money } from '@/lib/money/money';
+import type { AnalysisWorkflowRepository, JsonRecord, StoredAnalysis } from '@/lib/db/repositories/analysis-workflow';
+
+const nullableText = z.string().trim().max(200).nullable().optional().default(null);
+const cardSchema = z.object({
+  sport: z.string().trim().min(1).max(40).default('football'),
+  playerName: z.string().trim().min(1).max(160),
+  canonicalPlayerId: nullableText,
+  teamShown: nullableText,
+  year: z.number().int().min(1800).max(2200).nullable().optional().default(null),
+  manufacturer: nullableText,
+  brand: nullableText,
+  setName: nullableText,
+  subset: nullableText,
+  cardNumber: nullableText,
+  rookie: z.boolean().nullable().optional().default(null),
+  parallel: nullableText,
+  color: nullableText,
+  serialNumber: z.number().int().positive().nullable().optional().default(null),
+  serialDenominator: z.number().int().positive().nullable().optional().default(null),
+  autographType: z.enum(['NONE', 'ON_CARD', 'STICKER', 'UNKNOWN']).default('NONE'),
+  memorabiliaType: z.enum(['NONE', 'GAME_USED', 'PLAYER_WORN', 'MANUFACTURED', 'UNKNOWN']).default('NONE'),
+  raw: z.boolean().nullable().optional().default(null),
+  gradingCompanyKey: nullableText,
+  grade: z.number().min(0).max(100).nullable().optional().default(null),
+  qualifiers: z.array(z.string().trim().min(1).max(40)).max(12).optional().default([]),
+});
+
+const costSchema = z.object({
+  key: z.string().trim().min(1).max(64).regex(/^[a-z0-9_-]+$/i),
+  label: z.string().trim().min(1).max(160),
+  amountMinor: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER),
+});
+
+export const manualAnalysisRequestSchema = z.object({
+  card: cardSchema,
+  currency: z.string().trim().regex(/^[A-Za-z]{3}$/).transform((value) => value.toUpperCase()).default('USD'),
+  cutoff: z.string().datetime({ offset: true }).optional(),
+  offer: z.object({
+    kind: z.enum(['FIXED_PRICE', 'LOCAL_OFFER', 'AUCTION']).default('FIXED_PRICE'),
+    priceMinor: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
+    shippingMinor: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER).default(0),
+    buyerPremiumBps: z.number().int().min(0).max(9_999).default(0),
+    bidIncrementMinor: z.number().int().positive().max(Number.MAX_SAFE_INTEGER).optional(),
+  }),
+  comps: z.array(z.object({
+    sourceLabel: z.string().trim().min(1).max(200),
+    listingTitle: z.string().trim().min(1).max(500),
+    occurredAt: z.string().datetime({ offset: true }),
+    salePriceMinor: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
+    shippingMinor: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER).default(0),
+    buyerPremiumMinor: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER).default(0),
+    card: cardSchema.optional(),
+    included: z.boolean().optional(),
+    overrideReason: z.string().trim().min(1).max(500).optional(),
+  })).min(1).max(100),
+  acquisitionCosts: z.array(costSchema).max(30).default([]),
+  fixedSellingCosts: z.array(costSchema).max(30).default([]),
+  sellingFeeBps: z.number().int().min(0).max(9_999).default(0),
+  sellingFlatFeeMinor: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER).default(0),
+  returnAllowanceBps: z.number().int().min(0).max(9_999).default(0),
+  targetRoiBps: z.number().int().min(0).max(100_000).optional(),
+  holdingDays: z.number().int().min(0).max(3650).default(90),
+});
+
+export type ManualAnalysisRequest = z.infer<typeof manualAnalysisRequestSchema>;
+
+function money(minor: number, currency: string): Money { return { minor: BigInt(minor), currency }; }
+function snapshot(value: unknown): JsonRecord { return JSON.parse(JSON.stringify(value, (_key, child) => typeof child === 'bigint' ? child.toString() : child)) as JsonRecord; }
+function identity(value: z.infer<typeof cardSchema>): CardIdentity { return createCardIdentity(value as CardIdentityInput); }
+
+export class ManualAnalysisService {
+  constructor(private readonly repository: AnalysisWorkflowRepository) {}
+
+  async create(userId: string, request: ManualAnalysisRequest, now = new Date()): Promise<StoredAnalysis> {
+    const settings = await this.repository.getSettings(userId);
+    const cutoff = request.cutoff ?? now.toISOString();
+    const target = identity(request.card);
+    const currency = request.currency;
+    const analysisId = `analysis:${randomUUID()}`;
+    const input = {
+      analysisId,
+      userId,
+      target,
+      cutoff,
+      formulaVersion: 'manual-analysis-v1',
+      isDemo: false,
+      purchaseStatus: 'UNDECIDED' as const,
+      currentOffer: {
+        kind: request.offer.kind,
+        priceOrBid: money(request.offer.priceMinor, currency),
+        shipping: money(request.offer.shippingMinor, currency),
+        buyerPremiumBps: request.offer.buyerPremiumBps,
+        ...(request.offer.bidIncrementMinor ? { bidIncrement: money(request.offer.bidIncrementMinor, currency) } : {}),
+      },
+      comps: request.comps.map((comp, index) => ({
+        record: {
+          id: `manual-comp:${analysisId}:${index + 1}`,
+          userId,
+          sourceKey: 'manual',
+          sourceRecordId: null,
+          sourceLabel: comp.sourceLabel,
+          originalUrl: null,
+          listingTitle: comp.listingTitle,
+          status: 'SOLD' as const,
+          saleType: 'FIXED_PRICE' as const,
+          occurredAt: comp.occurredAt,
+          importedAt: cutoff,
+          freshnessAt: cutoff,
+          timezone: 'UTC',
+          salePriceMinor: BigInt(comp.salePriceMinor),
+          shippingMinor: BigInt(comp.shippingMinor),
+          buyerPremiumMinor: BigInt(comp.buyerPremiumMinor),
+          taxMinor: null,
+          currency,
+          fingerprint: `manual:${analysisId}:${index + 1}`,
+          raw: { source: 'manual', sourceLabel: comp.sourceLabel },
+          isDemo: false,
+        },
+        candidate: {
+          identity: comp.card ? identity(comp.card) : target,
+          listing: { title: comp.listingTitle, status: 'SOLD' as const, saleType: 'FIXED_PRICE' as const, acceptedPriceKnown: true, duplicate: false },
+        },
+        ...(comp.included === undefined ? {} : { manualIncluded: comp.included, overrideReason: comp.overrideReason }),
+      })),
+      feeSchedule: {
+        id: `manual-fees:${analysisId}`,
+        sourceKey: 'manual',
+        effectiveFrom: cutoff,
+        effectiveTo: null,
+        rules: [{ key: 'selling_fee', label: 'Seller fee entered by owner', basis: 'GROSS_SALE' as const, bps: request.sellingFeeBps, flatMinor: BigInt(request.sellingFlatFeeMinor) }],
+      },
+      acquisitionCosts: request.acquisitionCosts.map((cost) => ({ key: cost.key, label: cost.label, amount: money(cost.amountMinor, currency) })),
+      fixedSellingCosts: request.fixedSellingCosts.map((cost) => ({ key: cost.key, label: cost.label, amount: money(cost.amountMinor, currency) })),
+      returnAllowanceBps: request.returnAllowanceBps,
+      targetRoiBps: request.targetRoiBps ?? settings.targetRoiBps ?? 1_500,
+      holdingDays: request.holdingDays,
+      sellHistory: [],
+      forecastHorizons: [7, 30, 90],
+      transactionCosts: money(0, currency),
+      minimumTimingEdge: money(0, currency),
+    };
+    const result = runAnalysis(input);
+    const cardId = `card:${analysisId}`;
+    return this.repository.createAnalysis({
+      id: analysisId,
+      snapshotId: `snapshot:${analysisId}`,
+      decisionId: `decision:${analysisId}`,
+      userId,
+      cardId,
+      cutoff,
+      formulaVersion: input.formulaVersion,
+      currentPriceMinor: result.currentAllIn.minor,
+      currency,
+      input: snapshot({ card: target, request, targetRoiBps: input.targetRoiBps }),
+      result: snapshot(result),
+      evidence: result.rawComps.map((comp) => ({ id: comp.record.id, included: comp.included, snapshot: snapshot(comp) })),
+    });
+  }
+}
