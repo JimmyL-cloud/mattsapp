@@ -3,6 +3,7 @@ import { NextRequest } from 'next/server';
 import { createAnalysesHandlers } from '@/app/api/analyses/route';
 import { createAnalysisIdHandlers } from '@/app/api/analyses/[id]/route';
 import { createPurchaseHandler } from '@/app/api/analyses/[id]/purchase/route';
+import { createReversalHandler } from '@/app/api/analyses/[id]/purchase/reversal/route';
 import { createSettingsHandlers } from '@/app/api/settings/route';
 import { createWatchlistHandlers } from '@/app/api/watchlist/route';
 import { createWatchlistIdHandlers } from '@/app/api/watchlist/[id]/route';
@@ -20,6 +21,7 @@ const dependencies: OwnerRouteDependencies = {
 const analyses = createAnalysesHandlers(dependencies);
 const analysisId = createAnalysisIdHandlers(dependencies);
 const purchase = createPurchaseHandler(dependencies);
+const reversal = createReversalHandler(dependencies);
 const settings = createSettingsHandlers(dependencies);
 const watchlist = createWatchlistHandlers(dependencies);
 const watchlistId = createWatchlistIdHandlers(dependencies);
@@ -48,7 +50,7 @@ describe('authenticated analysis workflow routes', () => {
     await repository.saveWatchlist({ id: 'watch:owner-a', userId: 'owner-a', cardId: 'card:owner-a', marketRecordId: null, notes: 'private', isStarred: true, createdAt: '2026-08-12T00:00:00.000Z' });
 
     expect((await analysisId.GET(request('http://test/api/analyses/analysis:owner-a', 'owner-b'), context('analysis:owner-a'))).status).toBe(404);
-    expect((await analysisId.PATCH(request('http://test/api/analyses/analysis:owner-a', 'owner-b', { method: 'PATCH', body: JSON.stringify({ status: 'PASSED' }), headers: { 'content-type': 'application/json' } }), context('analysis:owner-a'))).status).toBe(404);
+    expect((await analysisId.PATCH(request('http://test/api/analyses/analysis:owner-a', 'owner-b', { method: 'PATCH', body: JSON.stringify({ status: 'PASSED', reason: 'Not my card' }), headers: { 'content-type': 'application/json' } }), context('analysis:owner-a'))).status).toBe(404);
     expect((await repository.getAnalysis('owner-a', 'analysis:owner-a'))?.purchaseStatus).toBe('UNDECIDED');
 
     const ownerBSettings = await (await settings.GET(request('http://test/api/settings', 'owner-b'))).json();
@@ -69,17 +71,58 @@ describe('authenticated analysis workflow routes', () => {
       input: { card: { playerName: 'Purchase Player', year: 2024, raw: true } }, result: { scenario: { maximumPurchasePriceForTargetRoi: { minor: '9000' } } }, evidence: [],
     });
     expect((await purchase(request('http://test/api/analyses/analysis:purchase/purchase', undefined, { method: 'POST', body: '{}', headers: { 'content-type': 'application/json' } }), context('analysis:purchase'))).status).toBe(401);
-    expect((await analysisId.PATCH(request('http://test/api/analyses/analysis:purchase', 'owner-p', { method: 'PATCH', body: JSON.stringify({ status: 'PURCHASED' }), headers: { 'content-type': 'application/json' } }), context('analysis:purchase'))).status).toBe(400);
+    expect((await analysisId.PATCH(request('http://test/api/analyses/analysis:purchase', 'owner-p', { method: 'PATCH', body: JSON.stringify({ status: 'PURCHASED', reason: 'Bought' }), headers: { 'content-type': 'application/json' } }), context('analysis:purchase'))).status).toBe(400);
     expect((await repository.loadPortfolio('owner-p')).holdings).toHaveLength(0);
 
     const saved = await purchase(request('http://test/api/analyses/analysis:purchase/purchase', 'owner-p', {
       method: 'POST', headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ amountMinor: 8_500, currency: 'USD', source: 'Card show receipt', occurredAt: '2026-08-12T12:00:00Z' }),
+      body: JSON.stringify({ idempotencyKey: 'purchase-test-0001', amountMinor: 8_500, currency: 'USD', source: 'Card show receipt', occurredAt: '2026-08-12T12:00:00Z' }),
     }), context('analysis:purchase'));
     expect(saved.status).toBe(201);
     const portfolio = await repository.loadPortfolio('owner-p');
     expect(portfolio.holdings).toHaveLength(1);
     expect(portfolio.holdings[0]).toMatchObject({ costBasisMinor: 8_500n, currentValueMinor: null, isDemo: false });
     expect(portfolio.decisions.map((decision) => decision.purchaseStatus)).toEqual(['PURCHASED']);
+
+    const illegal = await analysisId.PATCH(request('http://test/api/analyses/analysis:purchase', 'owner-p', { method: 'PATCH', body: JSON.stringify({ status: 'CANCELLED', reason: 'Changed mind' }), headers: { 'content-type': 'application/json' } }), context('analysis:purchase'));
+    expect(illegal.status).toBe(409);
+    expect((await repository.loadPortfolio('owner-p')).holdings).toHaveLength(1);
+
+    const reversed = await reversal(request('http://test/api/analyses/analysis:purchase/purchase/reversal', 'owner-p', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ idempotencyKey: 'reversal-test-0001', reason: 'Seller refunded purchase', source: 'Seller refund', occurredAt: '2026-08-12T13:00:00Z' }) }), context('analysis:purchase'));
+    expect(reversed.status).toBe(201);
+    expect((await repository.loadPortfolio('owner-p')).holdings).toHaveLength(0);
+  });
+
+  it('returns exact purchase retries and rejects key reuse or future dates', async () => {
+    await repository.createAnalysis({ id: 'analysis:retry', snapshotId: 'snapshot:retry', decisionId: 'decision:retry', userId: 'owner-r', cardId: 'card:retry', cutoff: '2026-08-12T00:00:00.000Z', formulaVersion: 'test-v1', currentPriceMinor: 10_000n, currency: 'USD', input: {}, result: {}, evidence: [] });
+    const fixed = createPurchaseHandler(dependencies, () => new Date('2026-08-12T14:00:00Z'));
+    const body = { idempotencyKey: 'purchase-retry-0001', amountMinor: 10_000, currency: 'USD', source: 'Receipt', occurredAt: '2026-08-12T12:00:00Z' };
+    const send = (value: object) => fixed(request('http://test/api/analyses/analysis:retry/purchase', 'owner-r', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(value) }), context('analysis:retry'));
+    expect((await send(body)).status).toBe(201);
+    const replay = await send(body);
+    expect(replay.status).toBe(200);
+    expect((await replay.json()).replayed).toBe(true);
+    expect((await send({ ...body, amountMinor: 11_000 })).status).toBe(409);
+    expect((await send({ ...body, idempotencyKey: 'purchase-future-0001', occurredAt: '2026-08-13T12:00:00Z' })).status).toBe(400);
+  });
+
+  it('collapses concurrent exact purchase retries to one holding', async () => {
+    await repository.createAnalysis({ id: 'analysis:concurrent', snapshotId: 'snapshot:concurrent', decisionId: 'decision:concurrent', userId: 'owner-c', cardId: 'card:concurrent', cutoff: '2026-08-12T00:00:00.000Z', formulaVersion: 'test-v1', currentPriceMinor: 10_000n, currency: 'USD', input: {}, result: {}, evidence: [] });
+    const body = { idempotencyKey: 'purchase-concurrent-0001', amountMinor: 10_000, currency: 'USD', source: 'Receipt', occurredAt: '2026-08-12T12:00:00Z' };
+    const send = () => purchase(request('http://test/api/analyses/analysis:concurrent/purchase', 'owner-c', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) }), context('analysis:concurrent'));
+    const responses = await Promise.all([send(), send()]);
+    expect(responses.map((response) => response.status).sort()).toEqual([200, 201]);
+    expect((await repository.loadPortfolio('owner-c')).holdings).toHaveLength(1);
+  });
+
+  it('groups open portfolio totals by currency without cross-currency addition', async () => {
+    for (const [suffix, currency, amount] of [['usd', 'USD', 10_000], ['cad', 'CAD', 20_000]] as const) {
+      await repository.createAnalysis({ id: `analysis:${suffix}`, snapshotId: `snapshot:${suffix}`, decisionId: `decision:${suffix}`, userId: 'owner-mixed', cardId: `card:${suffix}`, cutoff: '2026-08-12T00:00:00.000Z', formulaVersion: 'test-v1', currentPriceMinor: BigInt(amount), currency, input: {}, result: {}, evidence: [] });
+      await repository.recordPurchase('owner-mixed', { analysisId: `analysis:${suffix}`, idempotencyKey: `purchase-mixed-${suffix}`, amountMinor: BigInt(amount), currency, source: 'Receipt', occurredAt: '2026-08-12T12:00:00Z' });
+    }
+    expect((await repository.loadPortfolio('owner-mixed')).summaries).toEqual([
+      expect.objectContaining({ currency: 'CAD', costBasisMinor: 20_000n, holdingCount: 1 }),
+      expect.objectContaining({ currency: 'USD', costBasisMinor: 10_000n, holdingCount: 1 }),
+    ]);
   });
 });

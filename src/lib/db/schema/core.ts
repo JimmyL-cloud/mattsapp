@@ -566,11 +566,17 @@ export const transactions = pgTable(
     currency: text('currency').notNull(),
     occurredAt: timestamp('occurred_at', { withTimezone: true }).notNull(),
     source: text('source').notNull(),
+    idempotencyKey: text('idempotency_key'),
     notes: text('notes'),
     reversesTransactionId: text('reverses_transaction_id'),
     isDemo: boolean('is_demo').notNull().default(false),
   },
-  (table) => [index('transactions_user_time_idx').on(table.userId, table.occurredAt), index('transactions_demo_idx').on(table.isDemo)],
+  (table) => [
+    index('transactions_user_time_idx').on(table.userId, table.occurredAt),
+    index('transactions_demo_idx').on(table.isDemo),
+    uniqueIndex('transactions_user_idempotency_idx').on(table.userId, table.idempotencyKey),
+    uniqueIndex('transactions_reversal_once_idx').on(table.reversesTransactionId),
+  ],
 );
 
 export const expenses = pgTable(

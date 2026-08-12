@@ -92,10 +92,33 @@ export class ManualAnalysisService {
     const target = identity(request.card);
     const currency = request.currency;
     const analysisId = `analysis:${randomUUID()}`;
+    const reviewedAt = now.toISOString();
     const importedRecords = request.importedComps.length
       ? await this.loadImportedRecords(userId, request.importedComps.map((comp) => comp.marketRecordId))
       : [];
     const importedById = new Map(importedRecords.map((record) => [record.id, record]));
+    const provenance = new Map<string, {
+      sourceKind: 'MANUAL' | 'CSV';
+      identitySource: 'STRUCTURED_MANUAL' | 'STRUCTURED_CSV' | 'OWNER_REVIEWED_TITLE' | 'TARGET_IDENTITY';
+      reviewAttestation: JsonRecord | null;
+    }>();
+    request.comps.forEach((comp, index) => provenance.set(`manual-comp:${analysisId}:${index + 1}`, {
+      sourceKind: 'MANUAL',
+      identitySource: comp.card ? 'STRUCTURED_MANUAL' : 'TARGET_IDENTITY',
+      reviewAttestation: null,
+    }));
+    request.importedComps.forEach((comp) => {
+      const record = importedById.get(comp.marketRecordId);
+      provenance.set(comp.marketRecordId, {
+        sourceKind: 'CSV',
+        identitySource: record?.cardIdentity ? 'STRUCTURED_CSV' : 'OWNER_REVIEWED_TITLE',
+        reviewAttestation: record?.cardIdentity ? null : snapshot({
+          reviewerUserId: userId,
+          reviewedAt,
+          statement: 'Owner confirmed the listing title identifies the target card',
+        }),
+      });
+    });
     const input = {
       analysisId,
       userId,
@@ -193,7 +216,7 @@ export class ManualAnalysisService {
       result: snapshot(result),
       evidence: result.rawComps.map((comp) => ({
         id: `${analysisId}:evidence:${comp.record.id}`,
-        sourceKind: comp.record.sourceKey === 'manual' ? 'MANUAL' as const : 'CSV' as const,
+        ...(provenance.get(comp.record.id) ?? (() => { throw new Error(`Evidence provenance is missing: ${comp.record.id}`); })()),
         included: comp.included,
         snapshot: snapshot(comp),
       })),

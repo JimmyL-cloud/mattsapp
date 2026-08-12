@@ -1,10 +1,9 @@
 import { NextResponse, type NextRequest } from 'next/server';
 import { z } from 'zod';
-import { purchaseStatuses } from '@/features/portfolio/purchase-status';
 import { productionOwnerRouteDependencies, type OwnerRouteDependencies } from '@/lib/api/owner-route-dependencies';
 
 type Context = { params: Promise<{ id: string }> };
-const decisionSchema = z.object({ status: z.enum(purchaseStatuses), reason: z.string().trim().max(1_000).nullable().optional().default(null) });
+const decisionSchema = z.object({ status: z.enum(['PASSED', 'MISSED', 'CANCELLED']), reason: z.string().trim().min(1).max(1_000) });
 
 export function createAnalysisIdHandlers(dependencies: OwnerRouteDependencies = productionOwnerRouteDependencies) {
   return {
@@ -20,9 +19,12 @@ export function createAnalysisIdHandlers(dependencies: OwnerRouteDependencies = 
       if (!owner) return NextResponse.json({ error: 'Owner authentication required' }, { status: 401 });
       const parsed = decisionSchema.safeParse(await request.json().catch(() => null));
       if (!parsed.success) return NextResponse.json({ error: 'Invalid decision update', details: parsed.error.flatten() }, { status: 400 });
-      if (parsed.data.status === 'PURCHASED') return NextResponse.json({ error: 'Use the purchase endpoint to record amount, source, and date' }, { status: 400 });
-      const analysis = await dependencies.getRepository().updateDecision(owner.id, (await context.params).id, parsed.data.status, parsed.data.reason);
-      return analysis ? NextResponse.json({ analysis }) : NextResponse.json({ error: 'Analysis not found' }, { status: 404 });
+      try {
+        const analysis = await dependencies.getRepository().updateDecision(owner.id, (await context.params).id, parsed.data.status, parsed.data.reason);
+        return analysis ? NextResponse.json({ analysis }) : NextResponse.json({ error: 'Analysis not found' }, { status: 404 });
+      } catch (error) {
+        return NextResponse.json({ error: error instanceof Error ? error.message : 'Decision could not be updated' }, { status: 409 });
+      }
     },
   };
 }

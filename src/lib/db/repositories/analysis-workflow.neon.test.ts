@@ -7,7 +7,7 @@ const write: AnalysisWrite = {
   id: 'analysis:one', snapshotId: 'snapshot:one', decisionId: 'decision:one', userId: 'owner:one', cardId: 'card:one',
   cutoff: '2026-08-12T00:00:00.000Z', formulaVersion: 'manual-analysis-v1', currentPriceMinor: 10_000n, currency: 'USD',
   input: { card: { sport: 'football', playerName: 'Test Player' } }, result: { persisted: true },
-  evidence: [{ id: 'manual-comp:one', included: false, snapshot: { source: 'manual' } }],
+  evidence: [{ id: 'manual-comp:one', sourceKind: 'MANUAL', identitySource: 'STRUCTURED_MANUAL', reviewAttestation: null, included: false, snapshot: { source: 'manual' } }],
 };
 
 describe('PostgresAnalysisWorkflowRepository with the Neon HTTP adapter', () => {

@@ -15,6 +15,13 @@
       "when": 1786564135777,
       "tag": "0001_sparkling_magdalene",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1786569485139,
+      "tag": "0002_gifted_gideon",
+      "breakpoints": true
     }
   ]
 }

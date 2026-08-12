@@ -1,10 +1,11 @@
-import { randomUUID } from 'node:crypto';
-import { and, desc, eq, isNull } from 'drizzle-orm';
+import { createHash } from 'node:crypto';
+import { and, desc, eq, inArray, isNull, sql } from 'drizzle-orm';
 import type { BatchItem } from 'drizzle-orm/batch';
 import type { NeonHttpDatabase } from 'drizzle-orm/neon-http';
 import type { PurchaseStatus } from '@/features/portfolio/purchase-status';
 import type { PortfolioHolding } from '@/features/portfolio/portfolio-service';
 import type { PortfolioDecisionRow } from '@/features/portfolio/demo-portfolio';
+import { assertTransition, requireReason } from '@/features/portfolio/decision-service';
 import { cardLabel, object } from '@/features/analysis/analysis-record';
 import {
   analyses,
@@ -34,7 +35,14 @@ export type AnalysisWrite = Readonly<{
   currency: string;
   input: JsonRecord;
   result: JsonRecord;
-  evidence: readonly Readonly<{ id: string; sourceKind?: 'MANUAL' | 'CSV'; included: boolean; snapshot: JsonRecord }>[];
+  evidence: readonly Readonly<{
+    id: string;
+    sourceKind: 'MANUAL' | 'CSV';
+    identitySource: 'STRUCTURED_MANUAL' | 'STRUCTURED_CSV' | 'OWNER_REVIEWED_TITLE' | 'TARGET_IDENTITY';
+    reviewAttestation: JsonRecord | null;
+    included: boolean;
+    snapshot: JsonRecord;
+  }>[];
 }>;
 
 export type StoredAnalysis = Readonly<{
@@ -63,14 +71,33 @@ export type WatchlistItem = Readonly<{
 
 export type PurchaseWrite = Readonly<{
   analysisId: string;
+  idempotencyKey: string;
   amountMinor: bigint;
   currency: string;
   source: string;
   occurredAt: string;
 }>;
 
+export type ReversalWrite = Readonly<{
+  analysisId: string;
+  idempotencyKey: string;
+  reason: string;
+  source: string;
+  occurredAt: string;
+}>;
+
+export type PurchaseResult = Readonly<{ analysis: StoredAnalysis; replayed: boolean }>;
+
+export type PortfolioSummary = Readonly<{
+  holdingCount: number;
+  costBasisMinor: bigint;
+  currentValueMinor: bigint | null;
+  unrealizedProfitMinor: bigint | null;
+  currency: string;
+}>;
+
 export type PersistedPortfolio = Readonly<{
-  summary: Readonly<{ holdingCount: number; costBasisMinor: bigint; currentValueMinor: bigint | null; unrealizedProfitMinor: bigint | null; currency: string }>;
+  summaries: readonly PortfolioSummary[];
   holdings: readonly PortfolioHolding[];
   decisions: readonly PortfolioDecisionRow[];
 }>;
@@ -80,7 +107,8 @@ export interface AnalysisWorkflowRepository {
   listAnalyses(userId: string): Promise<readonly StoredAnalysis[]>;
   getAnalysis(userId: string, analysisId: string): Promise<StoredAnalysis | null>;
   updateDecision(userId: string, analysisId: string, status: PurchaseStatus, reason: string | null): Promise<StoredAnalysis | null>;
-  recordPurchase(userId: string, input: PurchaseWrite): Promise<StoredAnalysis | null>;
+  recordPurchase(userId: string, input: PurchaseWrite): Promise<PurchaseResult | null>;
+  reversePurchase(userId: string, input: ReversalWrite): Promise<PurchaseResult | null>;
   loadPortfolio(userId: string): Promise<PersistedPortfolio>;
   getSettings(userId: string): Promise<{ targetRoiBps: number }>;
   updateSettings(userId: string, targetRoiBps: number): Promise<{ targetRoiBps: number }>;
@@ -110,43 +138,64 @@ function bigintValue(value: unknown): bigint {
   return 0n;
 }
 
-function portfolioFrom(
-  analyses: readonly StoredAnalysis[],
-  purchaseFor: (analysis: StoredAnalysis) => PurchaseWrite | null,
-): PersistedPortfolio {
+type HoldingRead = Readonly<{
+  id: string;
+  analysisId: string;
+  snapshotId: string;
+  cardId: string;
+  acquiredAt: string;
+  costBasisMinor: bigint;
+  currency: string;
+  closedAt: string | null;
+}>;
+
+function portfolioFrom(analyses: readonly StoredAnalysis[], persisted: readonly HoldingRead[]): PersistedPortfolio {
+  const byAnalysis = new Map(analyses.map((analysis) => [analysis.id, analysis]));
   const decisions: PortfolioDecisionRow[] = [];
   const holdings: PortfolioHolding[] = [];
-  for (const analysis of analyses) {
-    if (analysis.purchaseStatus !== 'PURCHASED') continue;
-    const purchase = purchaseFor(analysis);
-    if (!purchase) continue;
+  for (const row of persisted) {
+    const analysis = byAnalysis.get(row.analysisId);
+    if (!analysis || analysis.purchaseStatus !== 'PURCHASED' || row.closedAt !== null) continue;
     const scenario = object(analysis.result.scenario);
     const modelMaximumMinor = bigintValue(object(scenario.maximumPurchasePriceForTargetRoi).minor);
     const label = cardLabel(analysis);
     decisions.push(Object.freeze({
-      id: analysis.decisionId, cardLabel: label, purchaseStatus: 'PURCHASED', mattMaximumMinor: purchase.amountMinor,
-      modelMaximumMinor, varianceMinor: purchase.amountMinor - modelMaximumMinor, currency: purchase.currency,
+      id: analysis.decisionId, cardLabel: label, purchaseStatus: 'PURCHASED', mattMaximumMinor: row.costBasisMinor,
+      modelMaximumMinor, varianceMinor: row.costBasisMinor - modelMaximumMinor, currency: row.currency,
       reason: 'Purchase recorded', isDemo: false,
     }));
     holdings.push(Object.freeze({
-      id: `holding:${analysis.id}`, userId: analysis.userId, decisionId: analysis.decisionId,
-      snapshotId: analysis.snapshotId, cardId: analysis.cardId, cardLabel: label, acquiredAt: purchase.occurredAt,
-      costBasisMinor: purchase.amountMinor, currentValueMinor: null, unrealizedProfitMinor: null,
-      currency: purchase.currency, recommendedSellWindowDays: null, staleAt: null, isDemo: false, closedAt: null,
+      id: row.id, userId: analysis.userId, decisionId: analysis.decisionId,
+      snapshotId: row.snapshotId, cardId: row.cardId, cardLabel: label, acquiredAt: row.acquiredAt,
+      costBasisMinor: row.costBasisMinor, currentValueMinor: null, unrealizedProfitMinor: null,
+      currency: row.currency, recommendedSellWindowDays: null, staleAt: null, isDemo: false, closedAt: row.closedAt,
     }));
   }
-  const costBasisMinor = holdings.reduce((sum, holding) => sum + holding.costBasisMinor, 0n);
+  const summaries = [...new Set(holdings.map((holding) => holding.currency))].sort().map((currency) => {
+    const group = holdings.filter((holding) => holding.currency === currency);
+    return Object.freeze({ holdingCount: group.length, costBasisMinor: group.reduce((sum, holding) => sum + holding.costBasisMinor, 0n), currentValueMinor: null, unrealizedProfitMinor: null, currency });
+  });
   return Object.freeze({
-    summary: Object.freeze({ holdingCount: holdings.length, costBasisMinor, currentValueMinor: null, unrealizedProfitMinor: null, currency: holdings[0]?.currency ?? 'USD' }),
+    summaries: Object.freeze(summaries),
     holdings: Object.freeze(holdings), decisions: Object.freeze(decisions),
   });
+}
+
+function operationId(userId: string, kind: 'purchase' | 'reversal', idempotencyKey: string): string {
+  return `${kind}:${createHash('sha256').update(`${userId}:${idempotencyKey}`).digest('hex')}`;
+}
+
+function sameTime(left: string, right: Date | string): boolean {
+  return Date.parse(left) === (right instanceof Date ? right.getTime() : Date.parse(right));
 }
 
 export class InMemoryAnalysisWorkflowRepository implements AnalysisWorkflowRepository {
   readonly #analyses = new Map<string, StoredAnalysis>();
   readonly #settings = new Map<string, number>();
   readonly #watchlist = new Map<string, WatchlistItem>();
-  readonly #purchases = new Map<string, PurchaseWrite>();
+  readonly #purchases = new Map<string, PurchaseWrite & { holdingId: string; closedAt: string | null }>();
+  readonly #purchaseOperations = new Map<string, PurchaseWrite>();
+  readonly #reversalOperations = new Map<string, ReversalWrite>();
 
   async createAnalysis(input: AnalysisWrite): Promise<StoredAnalysis> {
     if (this.#analyses.has(input.id)) throw new Error('Analysis already exists');
@@ -167,25 +216,76 @@ export class InMemoryAnalysisWorkflowRepository implements AnalysisWorkflowRepos
   async updateDecision(userId: string, analysisId: string, purchaseStatus: PurchaseStatus, reason: string | null): Promise<StoredAnalysis | null> {
     const current = await this.getAnalysis(userId, analysisId);
     if (!current) return null;
-    const next = Object.freeze({ ...current, purchaseStatus, decisionReason: reason });
+    assertTransition(current.purchaseStatus, purchaseStatus, false);
+    const normalizedReason = requireReason(reason ?? '');
+    const next = Object.freeze({ ...current, purchaseStatus, decisionReason: normalizedReason });
     this.#analyses.set(analysisId, next);
     return next;
   }
 
-  async recordPurchase(userId: string, input: PurchaseWrite): Promise<StoredAnalysis | null> {
+  async recordPurchase(userId: string, input: PurchaseWrite): Promise<PurchaseResult | null> {
+    const key = `${userId}:${input.idempotencyKey}`;
+    const replay = this.#purchaseOperations.get(key);
+    if (replay) {
+      this.assertExactPurchase(replay, input);
+      const saved = await this.getAnalysis(userId, input.analysisId);
+      if (!saved || saved.purchaseStatus !== 'PURCHASED') throw new Error('The idempotent purchase has already been reversed');
+      return Object.freeze({ analysis: saved, replayed: true });
+    }
     const current = await this.getAnalysis(userId, input.analysisId);
     if (!current) return null;
+    const concurrentReplay = this.#purchaseOperations.get(key);
+    if (concurrentReplay) {
+      this.assertExactPurchase(concurrentReplay, input);
+      const saved = await this.getAnalysis(userId, input.analysisId);
+      if (!saved || saved.purchaseStatus !== 'PURCHASED') throw new Error('The idempotent purchase has already been reversed');
+      return Object.freeze({ analysis: saved, replayed: true });
+    }
     if (current.purchaseStatus !== 'UNDECIDED') throw new Error(`Only an undecided analysis can be recorded as purchased`);
     if (input.currency !== current.currency) throw new Error('Purchase currency does not match analysis currency');
     const next = Object.freeze({ ...current, purchaseStatus: 'PURCHASED' as const });
+    this.#purchaseOperations.set(key, Object.freeze({ ...input }));
     this.#analyses.set(current.id, next);
-    this.#purchases.set(current.id, Object.freeze({ ...input }));
-    return next;
+    this.#purchases.set(current.id, Object.freeze({ ...input, holdingId: `holding:${current.id}`, closedAt: null }));
+    return Object.freeze({ analysis: next, replayed: false });
+  }
+
+  async reversePurchase(userId: string, input: ReversalWrite): Promise<PurchaseResult | null> {
+    const key = `${userId}:${input.idempotencyKey}`;
+    const replay = this.#reversalOperations.get(key);
+    if (replay) {
+      this.assertExactReversal(replay, input);
+      const saved = await this.getAnalysis(userId, input.analysisId);
+      return saved ? Object.freeze({ analysis: saved, replayed: true }) : null;
+    }
+    const current = await this.getAnalysis(userId, input.analysisId);
+    if (!current) return null;
+    assertTransition(current.purchaseStatus, 'CANCELLED', true);
+    const normalizedReason = requireReason(input.reason);
+    const purchase = this.#purchases.get(current.id);
+    if (!purchase || purchase.closedAt !== null) throw new Error('An open purchased holding is required for reversal');
+    const next = Object.freeze({ ...current, purchaseStatus: 'CANCELLED' as const, decisionReason: normalizedReason });
+    this.#reversalOperations.set(key, Object.freeze({ ...input, reason: normalizedReason }));
+    this.#purchases.set(current.id, Object.freeze({ ...purchase, closedAt: input.occurredAt }));
+    this.#analyses.set(current.id, next);
+    return Object.freeze({ analysis: next, replayed: false });
   }
 
   async loadPortfolio(userId: string): Promise<PersistedPortfolio> {
-    const purchased = [...this.#analyses.values()].filter((analysis) => analysis.userId === userId && analysis.purchaseStatus === 'PURCHASED');
-    return portfolioFrom(purchased, (analysis) => this.#purchases.get(analysis.id) ?? null);
+    const ownerAnalyses = [...this.#analyses.values()].filter((analysis) => analysis.userId === userId);
+    const rows: HoldingRead[] = [...this.#purchases.entries()].map(([analysisId, purchase]) => {
+      const analysis = this.#analyses.get(analysisId)!;
+      return { id: purchase.holdingId, analysisId, snapshotId: analysis.snapshotId, cardId: analysis.cardId, acquiredAt: purchase.occurredAt, costBasisMinor: purchase.amountMinor, currency: purchase.currency, closedAt: purchase.closedAt };
+    });
+    return portfolioFrom(ownerAnalyses, rows);
+  }
+
+  private assertExactPurchase(saved: PurchaseWrite, input: PurchaseWrite): void {
+    if (saved.analysisId !== input.analysisId || saved.amountMinor !== input.amountMinor || saved.currency !== input.currency || saved.source !== input.source || !sameTime(saved.occurredAt, input.occurredAt)) throw new Error('Idempotency key was already used for a different purchase');
+  }
+
+  private assertExactReversal(saved: ReversalWrite, input: ReversalWrite): void {
+    if (saved.analysisId !== input.analysisId || saved.reason !== input.reason || saved.source !== input.source || !sameTime(saved.occurredAt, input.occurredAt)) throw new Error('Idempotency key was already used for a different reversal');
   }
 
   async getSettings(userId: string): Promise<{ targetRoiBps: number }> { return { targetRoiBps: this.#settings.get(userId) ?? 1_500 }; }
@@ -219,7 +319,20 @@ export class PostgresAnalysisWorkflowRepository implements AnalysisWorkflowRepos
       }),
       this.database.insert(userDecisions).values({ id: input.decisionId, userId: input.userId, predictionSnapshotId: input.snapshotId, purchaseStatus: 'UNDECIDED', isDemo: false, decidedAt: createdAt }),
     ];
-    if (input.evidence.length) writes.push(this.database.insert(analysisEvidence).values(input.evidence.map((evidence) => ({ id: evidence.id, analysisId: input.id, sourceKind: evidence.sourceKind ?? 'MANUAL', evidenceSnapshot: evidence.snapshot, included: evidence.included }))));
+    if (input.evidence.length) writes.push(this.database.insert(analysisEvidence).values(input.evidence.map((evidence) => ({
+      id: evidence.id,
+      analysisId: input.id,
+      sourceKind: evidence.sourceKind,
+      evidenceSnapshot: {
+        ...evidence.snapshot,
+        provenance: {
+          origin: evidence.sourceKind,
+          identitySource: evidence.identitySource,
+          reviewAttestation: evidence.reviewAttestation,
+        },
+      },
+      included: evidence.included,
+    }))));
     // Neon HTTP rejects transaction(); batch is its supported server-side atomic
     // write mechanism and sends the complete dependent write bundle together.
     await this.database.batch(writes);
@@ -237,38 +350,124 @@ export class PostgresAnalysisWorkflowRepository implements AnalysisWorkflowRepos
   async updateDecision(userId: string, analysisId: string, purchaseStatus: PurchaseStatus, reason: string | null): Promise<StoredAnalysis | null> {
     const analysis = await this.readStored(userId, analysisId);
     if (!analysis) return null;
-    await this.database.update(userDecisions).set({ purchaseStatus, reason, decidedAt: new Date() }).where(and(eq(userDecisions.id, analysis.decisionId), eq(userDecisions.userId, userId), eq(userDecisions.isDemo, false)));
+    assertTransition(analysis.purchaseStatus, purchaseStatus, false);
+    const normalizedReason = requireReason(reason ?? '');
+    const changed = await this.database.update(userDecisions).set({ purchaseStatus, reason: normalizedReason, decidedAt: new Date() }).where(and(eq(userDecisions.id, analysis.decisionId), eq(userDecisions.userId, userId), eq(userDecisions.purchaseStatus, analysis.purchaseStatus), eq(userDecisions.isDemo, false))).returning({ id: userDecisions.id });
+    if (changed.length !== 1) throw new Error('Decision changed concurrently; reload before retrying');
     return Object.freeze({ ...analysis, purchaseStatus });
   }
 
-  async recordPurchase(userId: string, input: PurchaseWrite): Promise<StoredAnalysis | null> {
+  async recordPurchase(userId: string, input: PurchaseWrite): Promise<PurchaseResult | null> {
+    const existing = await this.readOperation(userId, input.idempotencyKey);
+    if (existing) return this.replayPurchase(userId, input, existing);
     const analysis = await this.readStored(userId, input.analysisId);
     if (!analysis) return null;
     if (analysis.purchaseStatus !== 'UNDECIDED') throw new Error('Only an undecided analysis can be recorded as purchased');
     if (analysis.currency !== input.currency) throw new Error('Purchase currency does not match analysis currency');
     const occurredAt = date(input.occurredAt);
     const holdingId = `holding:${analysis.id}`;
-    const transactionId = `transaction:${randomUUID()}`;
-    await this.database.batch([
-      this.database.update(userDecisions).set({ purchaseStatus: 'PURCHASED', reason: 'Purchase recorded', decidedAt: occurredAt }).where(and(eq(userDecisions.id, analysis.decisionId), eq(userDecisions.userId, userId), eq(userDecisions.purchaseStatus, 'UNDECIDED'), eq(userDecisions.isDemo, false))),
-      this.database.insert(portfolioHoldings).values({ id: holdingId, userId, cardCatalogItemId: analysis.cardId, predictionSnapshotId: analysis.snapshotId, acquiredAt: occurredAt, costBasisMinor: input.amountMinor, currency: input.currency, isDemo: false }),
-      this.database.insert(transactions).values({ id: transactionId, userId, holdingId, decisionId: analysis.decisionId, transactionType: 'PURCHASE', amountMinor: input.amountMinor, currency: input.currency, occurredAt, source: input.source, isDemo: false }),
-    ]);
-    return Object.freeze({ ...analysis, purchaseStatus: 'PURCHASED' });
+    const transactionId = operationId(userId, 'purchase', input.idempotencyKey);
+    try {
+      const inserted = await this.database.execute<{ id: string }>(sql`
+        with transitioned as (
+          update user_decisions
+          set purchase_status = 'PURCHASED', reason = 'Purchase recorded', decided_at = ${occurredAt}
+          where id = ${analysis.decisionId} and user_id = ${userId} and purchase_status = 'UNDECIDED' and is_demo = false
+          returning id
+        ), inserted_holding as (
+          insert into portfolio_holdings (id, user_id, card_catalog_item_id, prediction_snapshot_id, acquired_at, cost_basis_minor, currency, quantity, is_demo)
+          select ${holdingId}, ${userId}, ${analysis.cardId}, ${analysis.snapshotId}, ${occurredAt}, ${input.amountMinor}, ${input.currency}, 1, false
+          from transitioned
+          returning id
+        )
+        , inserted_transaction as (
+          insert into transactions (id, user_id, holding_id, decision_id, transaction_type, amount_minor, currency, occurred_at, source, idempotency_key, is_demo)
+          select ${transactionId}, ${userId}, id, ${analysis.decisionId}, 'PURCHASE', ${input.amountMinor}, ${input.currency}, ${occurredAt}, ${input.source}, ${input.idempotencyKey}, false
+          from inserted_holding
+          returning id
+        )
+        select id from inserted_transaction
+      `);
+      if (inserted.rows.length === 0) {
+        const concurrent = await this.readOperation(userId, input.idempotencyKey);
+        if (concurrent) return this.replayPurchase(userId, input, concurrent);
+        throw new Error('Purchase state changed concurrently; reload before retrying');
+      }
+    } catch (error) {
+      const committed = await this.readOperation(userId, input.idempotencyKey);
+      if (committed) return this.replayPurchase(userId, input, committed);
+      throw error;
+    }
+    const committed = await this.readOperation(userId, input.idempotencyKey);
+    if (!committed) throw new Error('Purchase state changed concurrently; reload before retrying');
+    return Object.freeze({ analysis: Object.freeze({ ...analysis, purchaseStatus: 'PURCHASED' }), replayed: false });
+  }
+
+  async reversePurchase(userId: string, input: ReversalWrite): Promise<PurchaseResult | null> {
+    const existing = await this.readOperation(userId, input.idempotencyKey);
+    if (existing) return this.replayReversal(userId, input, existing);
+    const analysis = await this.readStored(userId, input.analysisId);
+    if (!analysis) return null;
+    assertTransition(analysis.purchaseStatus, 'CANCELLED', true);
+    const reason = requireReason(input.reason);
+    const holding = (await this.database.select().from(portfolioHoldings).where(and(eq(portfolioHoldings.userId, userId), eq(portfolioHoldings.predictionSnapshotId, analysis.snapshotId), eq(portfolioHoldings.isDemo, false), isNull(portfolioHoldings.closedAt)))).at(0);
+    if (!holding) throw new Error('An open purchased holding is required for reversal');
+    const purchase = (await this.database.select().from(transactions).where(and(eq(transactions.userId, userId), eq(transactions.holdingId, holding.id), eq(transactions.transactionType, 'PURCHASE'), eq(transactions.isDemo, false)))).at(0);
+    if (!purchase) throw new Error('The purchase transaction is missing');
+    const occurredAt = date(input.occurredAt);
+    const reversalId = `reversal:${purchase.id}`;
+    try {
+      const inserted = await this.database.execute<{ id: string }>(sql`
+        with transitioned as (
+          update user_decisions
+          set purchase_status = 'CANCELLED', reason = ${reason}, decided_at = ${occurredAt}
+          where id = ${analysis.decisionId} and user_id = ${userId} and purchase_status = 'PURCHASED' and is_demo = false
+          returning id
+        ), closed_holding as (
+          update portfolio_holdings
+          set closed_at = ${occurredAt}
+          where id = ${holding.id} and user_id = ${userId} and is_demo = false and closed_at is null and exists (select 1 from transitioned)
+          returning id
+        )
+        , inserted_transaction as (
+          insert into transactions (id, user_id, holding_id, decision_id, transaction_type, amount_minor, currency, occurred_at, source, idempotency_key, notes, reverses_transaction_id, is_demo)
+          select ${reversalId}, ${userId}, id, ${analysis.decisionId}, 'REVERSAL', ${-purchase.amountMinor}, ${purchase.currency}, ${occurredAt}, ${input.source}, ${input.idempotencyKey}, ${reason}, ${purchase.id}, false
+          from closed_holding
+          returning id
+        )
+        select id from inserted_transaction
+      `);
+      if (inserted.rows.length === 0) {
+        const concurrent = await this.readOperation(userId, input.idempotencyKey);
+        if (concurrent) return this.replayReversal(userId, input, concurrent);
+        throw new Error('Purchase reversal state changed concurrently; reload before retrying');
+      }
+    } catch (error) {
+      const committed = await this.readOperation(userId, input.idempotencyKey);
+      if (committed) return this.replayReversal(userId, input, committed);
+      throw error;
+    }
+    const committed = await this.readOperation(userId, input.idempotencyKey);
+    if (!committed) throw new Error('Purchase reversal state changed concurrently; reload before retrying');
+    return Object.freeze({ analysis: Object.freeze({ ...analysis, purchaseStatus: 'CANCELLED' }), replayed: false });
   }
 
   async loadPortfolio(userId: string): Promise<PersistedPortfolio> {
     const all = await this.listAnalyses(userId);
-    const purchased = all.filter((analysis) => analysis.purchaseStatus === 'PURCHASED');
-    if (!purchased.length) return portfolioFrom([], () => null);
-    const rows = await this.database.select().from(transactions).where(and(
-      eq(transactions.userId, userId), eq(transactions.isDemo, false), eq(transactions.transactionType, 'PURCHASE'),
-    ));
-    const byDecision = new Map(rows.map((row) => [row.decisionId, row]));
-    return portfolioFrom(purchased, (analysis) => {
-      const row = byDecision.get(analysis.decisionId);
-      return row ? { analysisId: analysis.id, amountMinor: row.amountMinor, currency: row.currency, source: row.source, occurredAt: row.occurredAt.toISOString() } : null;
+    const open = await this.database.select().from(portfolioHoldings).where(and(eq(portfolioHoldings.userId, userId), eq(portfolioHoldings.isDemo, false), isNull(portfolioHoldings.closedAt)));
+    if (!open.length) return portfolioFrom(all, []);
+    const purchaseRows = await this.database.select().from(transactions).where(and(eq(transactions.userId, userId), eq(transactions.isDemo, false), eq(transactions.transactionType, 'PURCHASE'), inArray(transactions.holdingId, open.map((holding) => holding.id))));
+    const purchaseByHolding = new Map(purchaseRows.map((row) => [row.holdingId, row]));
+    const analysisBySnapshot = new Map(all.map((analysis) => [analysis.snapshotId, analysis]));
+    const rows = open.map((holding): HoldingRead => {
+      if (!holding.predictionSnapshotId) throw new Error(`Holding ${holding.id} is missing its prediction snapshot`);
+      const analysis = analysisBySnapshot.get(holding.predictionSnapshotId);
+      if (!analysis) throw new Error(`Holding ${holding.id} references an unavailable analysis snapshot`);
+      const purchase = purchaseByHolding.get(holding.id);
+      if (!purchase || purchase.amountMinor !== holding.costBasisMinor || purchase.currency !== holding.currency) throw new Error(`Holding ${holding.id} does not match its purchase transaction`);
+      return { id: holding.id, analysisId: analysis.id, snapshotId: holding.predictionSnapshotId, cardId: holding.cardCatalogItemId, acquiredAt: holding.acquiredAt.toISOString(), costBasisMinor: holding.costBasisMinor, currency: holding.currency, closedAt: holding.closedAt?.toISOString() ?? null };
     });
+    return portfolioFrom(all, rows);
   }
 
   async getSettings(userId: string): Promise<{ targetRoiBps: number }> {
@@ -299,6 +498,26 @@ export class PostgresAnalysisWorkflowRepository implements AnalysisWorkflowRepos
   async deleteWatchlist(userId: string, itemId: string): Promise<boolean> {
     const rows = await this.database.update(watchlistItems).set({ deletedAt: new Date() }).where(and(eq(watchlistItems.id, itemId), eq(watchlistItems.userId, userId), eq(watchlistItems.isDemo, false))).returning({ id: watchlistItems.id });
     return rows.length > 0;
+  }
+
+  private async readOperation(userId: string, idempotencyKey: string) {
+    return (await this.database.select().from(transactions).where(and(eq(transactions.userId, userId), eq(transactions.idempotencyKey, idempotencyKey), eq(transactions.isDemo, false)))).at(0) ?? null;
+  }
+
+  private async replayPurchase(userId: string, input: PurchaseWrite, row: typeof transactions.$inferSelect): Promise<PurchaseResult> {
+    const analysis = await this.readStored(userId, input.analysisId);
+    if (!analysis) throw new Error('Idempotency key belongs to an unavailable purchase');
+    if (row.transactionType !== 'PURCHASE' || row.decisionId !== analysis.decisionId || row.amountMinor !== input.amountMinor || row.currency !== input.currency || row.source !== input.source || !sameTime(input.occurredAt, row.occurredAt)) throw new Error('Idempotency key was already used for a different purchase');
+    if (analysis.purchaseStatus !== 'PURCHASED') throw new Error('The idempotent purchase has already been reversed');
+    return Object.freeze({ analysis, replayed: true });
+  }
+
+  private async replayReversal(userId: string, input: ReversalWrite, row: typeof transactions.$inferSelect): Promise<PurchaseResult> {
+    const analysis = await this.readStored(userId, input.analysisId);
+    if (!analysis) throw new Error('Idempotency key belongs to an unavailable reversal');
+    if (row.transactionType !== 'REVERSAL' || row.decisionId !== analysis.decisionId || row.source !== input.source || row.notes !== input.reason || !sameTime(input.occurredAt, row.occurredAt)) throw new Error('Idempotency key was already used for a different reversal');
+    if (analysis.purchaseStatus !== 'CANCELLED') throw new Error('Reversal state is inconsistent');
+    return Object.freeze({ analysis, replayed: true });
   }
 
   private async readStored(userId: string, analysisId: string): Promise<StoredAnalysis | null> {

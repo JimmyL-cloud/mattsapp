@@ -11,8 +11,11 @@ export default defineConfig({
   use: {
     baseURL: `http://127.0.0.1:${port}`,
     trace: 'retain-on-failure',
-    ...devices['Desktop Chrome'],
   },
+  projects: [
+    { name: 'desktop-chromium', use: { ...devices['Desktop Chrome'] } },
+    { name: 'mobile-chromium', use: { ...devices['Pixel 7'] } },
+  ],
   webServer: {
     command: `node --require ./scripts/memory-usage-shim.cjs ./node_modules/next/dist/bin/next dev -H 127.0.0.1 -p ${port}`,
     url: `http://127.0.0.1:${port}/login`,

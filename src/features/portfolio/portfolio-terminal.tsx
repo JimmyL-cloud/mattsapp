@@ -2,7 +2,7 @@ import { PurchaseStatusBadge } from '@/components/terminal/purchase-status';
 import type { PortfolioHolding } from './portfolio-service';
 import type { PortfolioDecisionRow } from './demo-portfolio';
 
-type PortfolioSummary = Readonly<{
+export type PortfolioSummary = Readonly<{
   holdingCount: number;
   costBasisMinor: bigint;
   currentValueMinor: bigint | null;
@@ -24,28 +24,31 @@ function resultClass(value: bigint | null): string {
 }
 
 export function PortfolioTerminal({
-  summary,
+  summaries,
   holdings,
   decisions,
   demoMode = true,
 }: {
-  summary: PortfolioSummary;
+  summaries: readonly PortfolioSummary[];
   holdings: readonly PortfolioHolding[];
   decisions: readonly PortfolioDecisionRow[];
   demoMode?: boolean;
 }) {
-  const returnBps = summary.costBasisMinor === 0n || summary.unrealizedProfitMinor === null ? null : Number(summary.unrealizedProfitMinor * 10_000n / summary.costBasisMinor);
+  const holdingCount = summaries.reduce((sum, summary) => sum + summary.holdingCount, 0);
   if (holdings.length === 0 && decisions.length === 0) return <div className="portfolio-grid"><section className="panel portfolio-heading wide"><div><h1>Portfolio</h1><span className="muted">ACTUAL TRANSACTIONS ONLY · REAL DATA</span></div><strong>0 OPEN HOLDINGS</strong></section><section className="panel empty-state wide"><h2>No portfolio activity yet</h2><p>Mark an analysis as purchased, then record the real transaction when portfolio persistence is connected. Forecasts and watchlist intent are never shown as holdings.</p><a className="primary-button" href="/history">Review decisions</a></section></div>;
   return <div className="portfolio-grid">
     <section className="panel portfolio-heading wide">
       <div><h1>Portfolio</h1><span className="muted">ACTUAL TRANSACTIONS ONLY · {demoMode ? 'DEMO / PLACEHOLDER' : 'REAL DATA'}</span></div>
-      <strong>{summary.holdingCount} OPEN HOLDINGS</strong>
+      <strong>{holdingCount} OPEN HOLDINGS</strong>
     </section>
-    <section className="portfolio-summary wide" aria-label="Portfolio totals">
-      <article className="signal"><h2>COST BASIS</h2><strong>{money(summary.costBasisMinor, summary.currency)}</strong><span>RECORDED ALL-IN</span></article>
-      <article className="signal"><h2>CURRENT VALUE</h2><strong>{summary.currentValueMinor === null ? 'NOT RECORDED' : money(summary.currentValueMinor, summary.currency)}</strong><span>LAST AUDITED MARK</span></article>
-      <article className="signal"><h2>UNREALIZED P/L</h2><strong className={resultClass(summary.unrealizedProfitMinor)}>{summary.unrealizedProfitMinor === null ? 'N/A' : signedMoney(summary.unrealizedProfitMinor, summary.currency)}</strong><span>{returnBps === null ? 'AWAITING REAL MARK' : `${(returnBps / 100).toFixed(2)}% RETURN`}</span></article>
-    </section>
+    {summaries.map((summary) => {
+      const returnBps = summary.costBasisMinor === 0n || summary.unrealizedProfitMinor === null ? null : Number(summary.unrealizedProfitMinor * 10_000n / summary.costBasisMinor);
+      return <section className="portfolio-summary wide" aria-label={`Portfolio totals ${summary.currency}`} key={summary.currency}>
+        <article className="signal"><h2>COST BASIS · {summary.currency}</h2><strong>{money(summary.costBasisMinor, summary.currency)}</strong><span>{summary.holdingCount} HOLDING{summary.holdingCount === 1 ? '' : 'S'} · RECORDED ALL-IN</span></article>
+        <article className="signal"><h2>CURRENT VALUE · {summary.currency}</h2><strong>{summary.currentValueMinor === null ? 'NOT RECORDED' : money(summary.currentValueMinor, summary.currency)}</strong><span>LAST AUDITED MARK</span></article>
+        <article className="signal"><h2>UNREALIZED P/L · {summary.currency}</h2><strong className={resultClass(summary.unrealizedProfitMinor)}>{summary.unrealizedProfitMinor === null ? 'N/A' : signedMoney(summary.unrealizedProfitMinor, summary.currency)}</strong><span>{returnBps === null ? 'AWAITING REAL MARK' : `${(returnBps / 100).toFixed(2)}% RETURN`}</span></article>
+      </section>;
+    })}
     <section className="panel wide table-scroll"><h2>OPEN HOLDINGS</h2><table><thead><tr>
       <th>CARD / SNAPSHOT</th><th>FOLLOW-THROUGH</th><th>ACQUIRED</th><th>COST BASIS</th><th>CURRENT VALUE</th><th>UNREALIZED</th><th>SELL WINDOW</th><th>FRESHNESS</th>
     </tr></thead><tbody>{holdings.map((holding) => <tr key={holding.id}>

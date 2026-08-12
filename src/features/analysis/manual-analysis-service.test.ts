@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { InMemoryAnalysisWorkflowRepository } from '@/lib/db/repositories/analysis-workflow';
 import { ManualAnalysisService, manualAnalysisRequestSchema } from './manual-analysis-service';
 import { InMemoryMarketRecordRepository } from '@/lib/db/repositories/market-records';
@@ -31,6 +31,14 @@ describe('ManualAnalysisService', () => {
     const changed = await repository.updateDecision('owner-1', analysis.id, 'PASSED', 'Price moved');
     expect(changed?.purchaseStatus).toBe('PASSED');
     expect(changed?.result).toEqual(analysis.result);
+  });
+
+  it('requires a reason and enforces terminal decision transitions', async () => {
+    const repository = new InMemoryAnalysisWorkflowRepository();
+    const analysis = await new ManualAnalysisService(repository).create('owner-state', request, new Date('2026-08-12T00:00:00Z'));
+    await expect(repository.updateDecision('owner-state', analysis.id, 'PASSED', null)).rejects.toThrow('reason is required');
+    await repository.updateDecision('owner-state', analysis.id, 'PASSED', 'Price too high');
+    await expect(repository.updateDecision('owner-state', analysis.id, 'MISSED', 'Changed label')).rejects.toThrow('Invalid purchase-status transition');
   });
 
   it('uses the owner setting when the request omits the target ROI', async () => {
@@ -79,6 +87,7 @@ describe('ManualAnalysisService', () => {
 
   it('requires an explicit review before title-only imported evidence can enter calculations', async () => {
     const repository = new InMemoryAnalysisWorkflowRepository();
+    const create = vi.spyOn(repository, 'createAnalysis');
     const market = new InMemoryMarketRecordRepository();
     const report = await new CsvImportService(market).importCsv({
       csv: 'source_record_id,title,sale_price,shipping,buyer_premium,tax,currency,sale_type,status,sold_at,timezone\nimport-1,2024 Prizm Caleb Williams 101 Silver PSA 10,125,0,0,,USD,FIXED_PRICE,SOLD,2026-08-01T12:00:00Z,UTC',
@@ -93,5 +102,25 @@ describe('ManualAnalysisService', () => {
     const analysis = await service.create('owner-1', reviewed, new Date('2026-08-12T00:00:00Z'));
     expect(analysis.result.rawComps).toHaveLength(3);
     expect((analysis.result.rawComps as Array<{ record: { id: string } }>).some((comp) => comp.record.id === recordId)).toBe(true);
+    const reviewedRequest = analysis.input.request as { importedComps: Array<{ identityReviewed: boolean }> };
+    expect(reviewedRequest.importedComps[0].identityReviewed).toBe(true);
+    expect(create.mock.calls.at(-1)?.[0].evidence.at(-1)).toMatchObject({
+      sourceKind: 'CSV', identitySource: 'OWNER_REVIEWED_TITLE',
+      reviewAttestation: { reviewerUserId: 'owner-1', reviewedAt: '2026-08-12T00:00:00.000Z' },
+    });
+  });
+
+  it('does not infer CSV evidence origin from a source key named manual', async () => {
+    const repository = new InMemoryAnalysisWorkflowRepository();
+    const create = vi.spyOn(repository, 'createAnalysis');
+    const market = new InMemoryMarketRecordRepository();
+    const report = await new CsvImportService(market).importCsv({
+      csv: 'source_record_id,title,sale_price,shipping,buyer_premium,tax,currency,sale_type,status,sold_at,timezone,player_name,year,brand,set_name,card_number,parallel,condition\nimport-structured,Structured row,125,0,0,,USD,FIXED_PRICE,SOLD,2026-08-01T12:00:00Z,UTC,Caleb Williams,2024,Prizm,Prizm,101,Silver,GRADED',
+      userId: 'owner-1', sourceKey: 'manual', sourceLabel: 'CSV source with misleading key', importedAt: '2026-08-11T12:00:00Z', now: '2026-08-12T00:00:00Z', isDemo: false,
+    });
+    const selected = manualAnalysisRequestSchema.parse({ ...request, importedComps: [{ marketRecordId: report.rows[0].recordId!, identityReviewed: false }] });
+    const analysis = await new ManualAnalysisService(repository, market).create('owner-1', selected, new Date('2026-08-12T00:00:00Z'));
+    expect(analysis.input.request).toMatchObject({ importedComps: [{ identityReviewed: false }] });
+    expect(create.mock.calls[0][0].evidence.at(-1)).toMatchObject({ sourceKind: 'CSV', identitySource: 'STRUCTURED_CSV', reviewAttestation: null });
   });
 });

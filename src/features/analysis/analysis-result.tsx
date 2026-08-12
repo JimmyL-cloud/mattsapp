@@ -21,6 +21,8 @@ export function AnalysisResultView({ initialAnalysis, onChange }: { initialAnaly
   const [purchaseAmount, setPurchaseAmount] = useState('');
   const [purchaseSource, setPurchaseSource] = useState('');
   const [purchaseDate, setPurchaseDate] = useState(() => new Date().toISOString().slice(0, 10));
+  const [decisionReason, setDecisionReason] = useState('');
+  const [purchaseIdempotencyKey] = useState(() => crypto.randomUUID());
   const result = object(analysis.result);
   const collector = object(result.collectorValue);
   const resale = object(result.resaleDeal);
@@ -41,7 +43,7 @@ export function AnalysisResultView({ initialAnalysis, onChange }: { initialAnaly
     setBusyAction(status);
     setMessage(null);
     try {
-      const response = await fetch(`/api/analyses/${encodeURIComponent(analysis.id)}`, { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ status }) });
+      const response = await fetch(`/api/analyses/${encodeURIComponent(analysis.id)}`, { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ status, reason: decisionReason }) });
       const body = await response.json().catch(() => ({}));
       if (!response.ok || !body.analysis) throw new Error(typeof body.error === 'string' ? body.error : 'Could not save decision');
       setAnalysis(body.analysis as AnalysisRecord);
@@ -76,7 +78,7 @@ export function AnalysisResultView({ initialAnalysis, onChange }: { initialAnaly
     try {
       const response = await fetch(`/api/analyses/${encodeURIComponent(analysis.id)}/purchase`, {
         method: 'POST', headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ amountMinor: Math.round(Number(purchaseAmount) * 100), currency, source: purchaseSource, occurredAt: new Date(`${purchaseDate}T12:00:00Z`).toISOString() }),
+        body: JSON.stringify({ idempotencyKey: purchaseIdempotencyKey, amountMinor: Math.round(Number(purchaseAmount) * 100), currency, source: purchaseSource, occurredAt: new Date(`${purchaseDate}T12:00:00Z`).toISOString() }),
       });
       const body = await response.json().catch(() => ({}));
       if (!response.ok || !body.analysis) throw new Error(typeof body.error === 'string' ? body.error : 'Purchase could not be recorded');
@@ -146,7 +148,7 @@ export function AnalysisResultView({ initialAnalysis, onChange }: { initialAnaly
     <section className="panel wide result-actions" aria-label="Save decision and watchlist actions">
       {analysis.purchaseStatus === 'UNDECIDED' ? <button className="primary-button" type="button" disabled={busyAction !== null} onClick={() => setPurchaseOpen((value) => !value)}>Record Purchase</button> : null}
       {purchaseOpen ? <div className="form-grid purchase-form"><label className="field">Actual all-in amount ($)<input aria-label="Actual all-in amount" type="number" min="0.01" step="0.01" value={purchaseAmount} onChange={(event) => setPurchaseAmount(event.target.value)} required /></label><label className="field">Purchase source<input aria-label="Purchase source" value={purchaseSource} onChange={(event) => setPurchaseSource(event.target.value)} required /></label><label className="field">Purchase date<input aria-label="Purchase date" type="date" value={purchaseDate} max={new Date().toISOString().slice(0, 10)} onChange={(event) => setPurchaseDate(event.target.value)} required /></label><button className="primary-button" type="button" disabled={busyAction !== null || !purchaseAmount || !purchaseSource.trim()} onClick={recordPurchase}>Save Purchase</button></div> : null}
-      {analysis.purchaseStatus === 'UNDECIDED' ? <button className="secondary-button" type="button" disabled={busyAction !== null} onClick={() => decision('PASSED')}>Mark Passed</button> : null}<button className="secondary-button" type="button" disabled={busyAction !== null || watchSaved} onClick={saveWatchlist}>{watchSaved ? 'Saved to Watchlist' : 'Save to Watchlist'}</button>{message ? <p className="notice" role="status">{message}</p> : null}
+      {analysis.purchaseStatus === 'UNDECIDED' ? <><label className="field">Decision reason<input aria-label="Decision reason" value={decisionReason} onChange={(event) => setDecisionReason(event.target.value)} placeholder="Why are you passing?" /></label><button className="secondary-button" type="button" disabled={busyAction !== null || !decisionReason.trim()} onClick={() => decision('PASSED')}>Mark Passed</button></> : null}<button className="secondary-button" type="button" disabled={busyAction !== null || watchSaved} onClick={saveWatchlist}>{watchSaved ? 'Saved to Watchlist' : 'Save to Watchlist'}</button>{message ? <p className="notice" role="status">{message}</p> : null}
     </section>
   </div>;
 }
