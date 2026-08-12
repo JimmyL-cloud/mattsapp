@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { InMemoryAnalysisWorkflowRepository } from '@/lib/db/repositories/analysis-workflow';
 import { ManualAnalysisService, manualAnalysisRequestSchema } from './manual-analysis-service';
+import { InMemoryMarketRecordRepository } from '@/lib/db/repositories/market-records';
+import { CsvImportService } from '@/features/imports/import-service';
 
 const request = manualAnalysisRequestSchema.parse({
   card: { playerName: 'Caleb Williams', year: 2024, brand: 'Prizm', setName: 'Prizm', cardNumber: '101', raw: false, gradingCompanyKey: 'psa', grade: 10 },
@@ -73,5 +75,23 @@ describe('ManualAnalysisService', () => {
     expect(rawComps[0]).toMatchObject({ included: false });
     expect(rawComps[0]?.exclusionCodes).toContain('WRONG_PLAYER');
     expect(rawComps[1]).toMatchObject({ included: true });
+  });
+
+  it('requires an explicit review before title-only imported evidence can enter calculations', async () => {
+    const repository = new InMemoryAnalysisWorkflowRepository();
+    const market = new InMemoryMarketRecordRepository();
+    const report = await new CsvImportService(market).importCsv({
+      csv: 'source_record_id,title,sale_price,shipping,buyer_premium,tax,currency,sale_type,status,sold_at,timezone\nimport-1,2024 Prizm Caleb Williams 101 Silver PSA 10,125,0,0,,USD,FIXED_PRICE,SOLD,2026-08-01T12:00:00Z,UTC',
+      userId: 'owner-1', sourceKey: 'owner-csv', sourceLabel: 'Owner CSV', importedAt: '2026-08-11T12:00:00Z', now: '2026-08-12T00:00:00Z', isDemo: false,
+    });
+    const recordId = report.rows[0].recordId!;
+    const service = new ManualAnalysisService(repository, market);
+    const unreviewed = manualAnalysisRequestSchema.parse({ ...request, importedComps: [{ marketRecordId: recordId, identityReviewed: false }] });
+    await expect(service.create('owner-1', unreviewed, new Date('2026-08-12T00:00:00Z'))).rejects.toThrow('requires explicit identity review');
+
+    const reviewed = manualAnalysisRequestSchema.parse({ ...request, importedComps: [{ marketRecordId: recordId, identityReviewed: true }] });
+    const analysis = await service.create('owner-1', reviewed, new Date('2026-08-12T00:00:00Z'));
+    expect(analysis.result.rawComps).toHaveLength(3);
+    expect((analysis.result.rawComps as Array<{ record: { id: string } }>).some((comp) => comp.record.id === recordId)).toBe(true);
   });
 });

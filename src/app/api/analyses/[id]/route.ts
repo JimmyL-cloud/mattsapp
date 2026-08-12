@@ -20,6 +20,7 @@ export function createAnalysisIdHandlers(dependencies: OwnerRouteDependencies = 
       if (!owner) return NextResponse.json({ error: 'Owner authentication required' }, { status: 401 });
       const parsed = decisionSchema.safeParse(await request.json().catch(() => null));
       if (!parsed.success) return NextResponse.json({ error: 'Invalid decision update', details: parsed.error.flatten() }, { status: 400 });
+      if (parsed.data.status === 'PURCHASED') return NextResponse.json({ error: 'Use the purchase endpoint to record amount, source, and date' }, { status: 400 });
       const analysis = await dependencies.getRepository().updateDecision(owner.id, (await context.params).id, parsed.data.status, parsed.data.reason);
       return analysis ? NextResponse.json({ analysis }) : NextResponse.json({ error: 'Analysis not found' }, { status: 404 });
     },

@@ -1,6 +1,6 @@
 'use client';
 
-import { useRef, useState, type FormEvent } from 'react';
+import { useEffect, useRef, useState, type FormEvent } from 'react';
 import { AnalysisResultView } from './analysis-result';
 import type { AnalysisRecord } from './analysis-record';
 
@@ -16,6 +16,10 @@ export type FormState = {
   askingPrice: string; shipping: string; tax: string; gradingCost: string; sellingFeePercent: string; sellingFlatFee: string;
   returnAllowancePercent: string; targetRoiPercent: string; holdingDays: string;
 };
+type ImportedEvidence = {
+  id: string; sourceLabel: string; listingTitle: string; occurredAt: string;
+  salePriceMinor: string; shippingMinor: string; currency: string; cardIdentity: Record<string, unknown> | null;
+};
 
 let nextCompId = 1;
 const todayInput = () => { const date = new Date(); date.setMinutes(date.getMinutes() - date.getTimezoneOffset()); return date.toISOString().slice(0, 10); };
@@ -24,7 +28,11 @@ const initial: FormState = { playerName: '', year: '', brand: '', setName: '', c
 const dollars = (value: string) => Math.round(Number(value || '0') * 100);
 const percentBps = (value: string) => Math.round(Number(value || '0') * 100);
 
-export function buildManualAnalysisRequest(form: FormState, comps: CompForm[]) {
+export function buildManualAnalysisRequest(
+  form: FormState,
+  comps: CompForm[],
+  importedComps: readonly { marketRecordId: string; identityReviewed: boolean }[] = [],
+) {
   const costs = [
     { key: 'tax', label: 'Sales tax / acquisition costs', amountMinor: dollars(form.tax) },
     { key: 'grading', label: 'Grading cost', amountMinor: dollars(form.gradingCost) },
@@ -37,6 +45,7 @@ export function buildManualAnalysisRequest(form: FormState, comps: CompForm[]) {
       card: { sport: 'football', playerName: comp.playerName, year: Number(comp.year), brand: comp.brand || null, setName: comp.setName || null, cardNumber: comp.cardNumber || null, parallel: comp.parallel || null, raw: comp.condition === 'RAW', gradingCompanyKey: comp.condition === 'GRADED' ? comp.gradingCompanyKey : null, grade: comp.condition === 'GRADED' ? Number(comp.grade) : null },
       ...(comp.selection === 'AUTO' ? {} : { included: comp.selection === 'INCLUDE', overrideReason: comp.overrideReason }),
     })),
+    importedComps,
     acquisitionCosts: costs, fixedSellingCosts: [], sellingFeeBps: percentBps(form.sellingFeePercent), sellingFlatFeeMinor: dollars(form.sellingFlatFee), returnAllowanceBps: percentBps(form.returnAllowancePercent), ...(form.targetRoiPercent ? { targetRoiBps: percentBps(form.targetRoiPercent) } : {}), holdingDays: Number(form.holdingDays),
   };
 }
@@ -47,7 +56,18 @@ export function AnalyzeWorkspace() {
   const [analysis, setAnalysis] = useState<AnalysisRecord | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [importedEvidence, setImportedEvidence] = useState<ImportedEvidence[]>([]);
+  const [selectedImported, setSelectedImported] = useState<Record<string, boolean>>({});
+  const [reviewedImported, setReviewedImported] = useState<Record<string, boolean>>({});
   const lastSubmitted = useRef<string | null>(null);
+
+  useEffect(() => {
+    fetch('/api/imports').then(async (response) => {
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(typeof body.error === 'string' ? body.error : 'Imported evidence could not be loaded');
+      setImportedEvidence(Array.isArray(body.records) ? body.records : []);
+    }).catch((caught: unknown) => setError(caught instanceof Error ? caught.message : 'Imported evidence could not be loaded'));
+  }, []);
 
   const update = <K extends keyof FormState>(key: K, value: FormState[K]) => setForm((current) => ({ ...current, [key]: value }));
   const updateComp = (id: number, patch: Partial<CompForm>) => setComps((current) => current.map((comp) => comp.id === id ? { ...comp, ...patch } : comp));
@@ -60,7 +80,10 @@ export function AnalyzeWorkspace() {
     if (busy) return;
     setError(null);
     if (comps.some((comp) => comp.selection !== 'AUTO' && !comp.overrideReason.trim())) { setError('Every manual include or exclude override needs a reason. Your form values are preserved.'); return; }
-    const body = buildManualAnalysisRequest(form, comps);
+    const selected = importedEvidence.filter((record) => selectedImported[record.id]);
+    const unreviewed = selected.find((record) => !record.cardIdentity && !reviewedImported[record.id]);
+    if (unreviewed) { setError(`Review the title-only imported row before calculating: ${unreviewed.listingTitle}`); return; }
+    const body = buildManualAnalysisRequest(form, comps, selected.map((record) => ({ marketRecordId: record.id, identityReviewed: Boolean(reviewedImported[record.id]) })));
     const signature = JSON.stringify(body);
     if (signature === lastSubmitted.current) { setError('This exact analysis was already submitted. Change an input before running it again.'); return; }
     setBusy(true);
@@ -117,6 +140,17 @@ export function AnalyzeWorkspace() {
             <label className="field">Evidence selection<select value={comp.selection} onChange={(event) => updateComp(comp.id, { selection: event.target.value as CompForm['selection'] })}><option value="AUTO">Use structured matching rules</option><option value="INCLUDE">Force include</option><option value="EXCLUDE">Exclude</option></select></label>{comp.selection !== 'AUTO' ? <label className="field field-span-2">Override reason<input value={comp.overrideReason} onChange={(event) => updateComp(comp.id, { overrideReason: event.target.value })} required /></label> : null}
           </div>
         </fieldset>)}</div>
+      </section>
+
+      <section className="panel form-section comps-section"><div className="section-number">04</div><div><h2>Imported CSV evidence</h2><p className="muted">Select persisted sold records to add to this calculation. Rows without structured identity must be reviewed before they can be used.</p></div>
+        {importedEvidence.length === 0 ? <p className="muted">No imported real evidence yet. Use Import Data to add sold records.</p> : <div className="comp-list">{importedEvidence.map((record) => {
+          const selected = Boolean(selectedImported[record.id]);
+          return <fieldset className="comp-card" key={record.id}><legend>{record.cardIdentity ? 'STRUCTURED CSV' : 'TITLE-ONLY CSV'}</legend>
+            <label className="field"><span><input type="checkbox" checked={selected} onChange={(event) => setSelectedImported((current) => ({ ...current, [record.id]: event.target.checked }))} /> Use in this analysis</span></label>
+            <p><strong>{record.listingTitle}</strong><br /><span className="muted">{record.sourceLabel} · {record.occurredAt.slice(0, 10)} · {(Number(record.salePriceMinor) / 100).toLocaleString('en-US', { style: 'currency', currency: record.currency })}</span></p>
+            {record.cardIdentity ? <p className="positive">STRUCTURED IDENTITY AVAILABLE</p> : <label className="field"><span><input type="checkbox" checked={Boolean(reviewedImported[record.id])} disabled={!selected} onChange={(event) => setReviewedImported((current) => ({ ...current, [record.id]: event.target.checked }))} /> I reviewed this listing title and confirm it identifies the target card.</span></label>}
+          </fieldset>;
+        })}</div>}
       </section>
 
       <section className="submit-bar"><div><strong>Ready to run the evidence tape?</strong><span>Your inputs stay in place if validation or analysis fails.</span></div><button className="primary-button" type="submit" disabled={busy}>{busy ? 'ANALYZING…' : 'ANALYZE CARD →'}</button></section>

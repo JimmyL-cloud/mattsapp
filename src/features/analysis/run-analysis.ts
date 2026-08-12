@@ -141,10 +141,10 @@ export function runAnalysis(input: RunAnalysisInput) {
   const totalWeight = fairValue.comps.reduce((sum, comp) => sum + comp.weight, 0);
   const effectiveSampleSize = totalWeight ** 2 / fairValue.comps.reduce((sum, comp) => sum + comp.weight ** 2, 0);
   const weightByCompId = new Map(fairValue.comps.map((comp) => [comp.id, comp.weight]));
-  const weightedMeanMatch = includedComps.reduce(
+  const weightedMeanMatch = Math.min(1, Math.max(0, includedComps.reduce(
     (sum, comp) => sum + comp.match.total * (weightByCompId.get(comp.record.id) ?? 0),
     0,
-  ) / totalWeight;
+  ) / totalWeight));
   const prices = includedComps.map((comp) => Number(comp.observedAllIn.minor));
   const priceMedian = median(prices);
   const normalizedMad = priceMedian === 0 ? 1 : median(prices.map((price) => Math.abs(price - priceMedian))) / priceMedian;
@@ -152,9 +152,9 @@ export function runAnalysis(input: RunAnalysisInput) {
   const confidence = calculateConfidence({
     effectiveSampleSize,
     weightedMeanMatch,
-    recentEvidenceShare: includedComps
+    recentEvidenceShare: Math.min(1, Math.max(0, includedComps
       .filter((comp) => comp.ageDays <= 180)
-      .reduce((sum, comp) => sum + (weightByCompId.get(comp.record.id) ?? 0), 0) / totalWeight,
+      .reduce((sum, comp) => sum + (weightByCompId.get(comp.record.id) ?? 0), 0) / totalWeight)),
     normalizedMedianAbsoluteDeviation: normalizedMad,
     matchedSalesPer90Days: includedComps.filter((comp) => comp.ageDays <= 90).length,
     distinctReliableSources: sourceKeys.size,

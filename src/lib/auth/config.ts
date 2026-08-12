@@ -35,6 +35,15 @@ function authOptions(): BetterAuthOptions {
 }
 
 let ownerAuth: ReturnType<typeof betterAuth> | undefined;
+const e2eCookie = 'mattsapp-e2e-owner';
+
+function e2eMode(): boolean {
+  return process.env.NODE_ENV !== 'production' && process.env.MATTSAPP_E2E === '1';
+}
+
+function hasE2eCookie(headers: Headers): boolean {
+  return (headers.get('cookie') ?? '').split(';').some((part) => part.trim() === `${e2eCookie}=authenticated`);
+}
 
 function getOwnerAuth(): ReturnType<typeof betterAuth> {
   ownerAuth ??= betterAuth(authOptions());
@@ -43,6 +52,11 @@ function getOwnerAuth(): ReturnType<typeof betterAuth> {
 
 export async function authenticateOwner(credentials: OwnerCredentials, headers: Headers): Promise<Response> {
   try {
+    if (e2eMode()) {
+      const expected = process.env.MATTSAPP_E2E_OWNER_PASSWORD;
+      if (!expected || credentials.password !== expected || !ownerMatches(credentials.email)) return Response.json({ error: 'Invalid owner credentials' }, { status: 401 });
+      return new Response(null, { status: 204, headers: { 'set-cookie': `${e2eCookie}=authenticated; Path=/; HttpOnly; SameSite=Lax` } });
+    }
     if (!ownerMatches(credentials.email)) return Response.json({ error: 'Invalid owner credentials' }, { status: 401 });
     return await getOwnerAuth().api.signInEmail({
       body: { email: configuredOwnerEmail(), password: credentials.password },
@@ -59,6 +73,7 @@ export async function authenticateOwner(credentials: OwnerCredentials, headers: 
 
 export async function getOwnerSessionFromHeaders(headers: Headers): Promise<OwnerIdentity | null> {
   try {
+    if (e2eMode()) return hasE2eCookie(headers) ? Object.freeze({ id: 'e2e-owner', email: configuredOwnerEmail() }) : null;
     const session = await getOwnerAuth().api.getSession({ headers });
     if (!session?.user || !ownerMatches(session.user.email)) return null;
     return Object.freeze({ id: session.user.id, email: session.user.email });
@@ -71,6 +86,7 @@ export async function getOwnerSessionFromHeaders(headers: Headers): Promise<Owne
 
 export async function signOutOwner(headers: Headers): Promise<Response> {
   try {
+    if (e2eMode()) return new Response(null, { status: 204, headers: { 'set-cookie': `${e2eCookie}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0` } });
     return await getOwnerAuth().api.signOut({ headers, asResponse: true });
   }
   catch (error) {

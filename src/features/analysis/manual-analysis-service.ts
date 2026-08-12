@@ -4,6 +4,7 @@ import { createCardIdentity, type CardIdentity, type CardIdentityInput } from '@
 import { runAnalysis } from '@/features/analysis/run-analysis';
 import type { Money } from '@/lib/money/money';
 import type { AnalysisWorkflowRepository, JsonRecord, StoredAnalysis } from '@/lib/db/repositories/analysis-workflow';
+import type { MarketRecordRepository } from '@/lib/db/repositories/market-records';
 
 const nullableText = z.string().trim().max(200).nullable().optional().default(null);
 const cardSchema = z.object({
@@ -58,6 +59,12 @@ export const manualAnalysisRequestSchema = z.object({
     included: z.boolean().optional(),
     overrideReason: z.string().trim().min(1).max(500).optional(),
   })).min(1).max(100),
+  importedComps: z.array(z.object({
+    marketRecordId: z.string().trim().min(1).max(500),
+    identityReviewed: z.boolean().default(false),
+    included: z.boolean().optional(),
+    overrideReason: z.string().trim().min(1).max(500).optional(),
+  })).max(100).default([]),
   acquisitionCosts: z.array(costSchema).max(30).default([]),
   fixedSellingCosts: z.array(costSchema).max(30).default([]),
   sellingFeeBps: z.number().int().min(0).max(9_999).default(0),
@@ -74,7 +81,10 @@ function snapshot(value: unknown): JsonRecord { return JSON.parse(JSON.stringify
 function identity(value: z.infer<typeof cardSchema>): CardIdentity { return createCardIdentity(value as CardIdentityInput); }
 
 export class ManualAnalysisService {
-  constructor(private readonly repository: AnalysisWorkflowRepository) {}
+  constructor(
+    private readonly repository: AnalysisWorkflowRepository,
+    private readonly marketRepository?: MarketRecordRepository,
+  ) {}
 
   async create(userId: string, request: ManualAnalysisRequest, now = new Date()): Promise<StoredAnalysis> {
     const settings = await this.repository.getSettings(userId);
@@ -82,6 +92,10 @@ export class ManualAnalysisService {
     const target = identity(request.card);
     const currency = request.currency;
     const analysisId = `analysis:${randomUUID()}`;
+    const importedRecords = request.importedComps.length
+      ? await this.loadImportedRecords(userId, request.importedComps.map((comp) => comp.marketRecordId))
+      : [];
+    const importedById = new Map(importedRecords.map((record) => [record.id, record]));
     const input = {
       analysisId,
       userId,
@@ -97,7 +111,8 @@ export class ManualAnalysisService {
         buyerPremiumBps: request.offer.buyerPremiumBps,
         ...(request.offer.bidIncrementMinor ? { bidIncrement: money(request.offer.bidIncrementMinor, currency) } : {}),
       },
-      comps: request.comps.map((comp, index) => ({
+      comps: [
+        ...request.comps.map((comp, index) => ({
         record: {
           id: `manual-comp:${analysisId}:${index + 1}`,
           userId,
@@ -117,6 +132,7 @@ export class ManualAnalysisService {
           buyerPremiumMinor: BigInt(comp.buyerPremiumMinor),
           taxMinor: null,
           currency,
+          cardIdentity: comp.card ? identity(comp.card) : target,
           fingerprint: `manual:${analysisId}:${index + 1}`,
           raw: { source: 'manual', sourceLabel: comp.sourceLabel },
           isDemo: false,
@@ -126,7 +142,24 @@ export class ManualAnalysisService {
           listing: { title: comp.listingTitle, status: 'SOLD' as const, saleType: 'FIXED_PRICE' as const, acceptedPriceKnown: true, duplicate: false },
         },
         ...(comp.included === undefined ? {} : { manualIncluded: comp.included, overrideReason: comp.overrideReason }),
-      })),
+        })),
+        ...request.importedComps.map((comp) => {
+          const record = importedById.get(comp.marketRecordId);
+          if (!record) throw new Error(`Imported evidence is unavailable: ${comp.marketRecordId}`);
+          if (record.status !== 'SOLD') throw new Error(`Imported evidence must be a completed sale: ${record.id}`);
+          if (!record.cardIdentity && !comp.identityReviewed) {
+            throw new Error(`Title-only imported evidence requires explicit identity review: ${record.id}`);
+          }
+          return {
+            record,
+            candidate: {
+              identity: record.cardIdentity ?? target,
+              listing: { title: record.listingTitle, status: record.status, saleType: record.saleType, acceptedPriceKnown: true, duplicate: false },
+            },
+            ...(comp.included === undefined ? {} : { manualIncluded: comp.included, overrideReason: comp.overrideReason }),
+          };
+        }),
+      ],
       feeSchedule: {
         id: `manual-fees:${analysisId}`,
         sourceKey: 'manual',
@@ -158,7 +191,21 @@ export class ManualAnalysisService {
       currency,
       input: snapshot({ card: target, request, targetRoiBps: input.targetRoiBps }),
       result: snapshot(result),
-      evidence: result.rawComps.map((comp) => ({ id: comp.record.id, included: comp.included, snapshot: snapshot(comp) })),
+      evidence: result.rawComps.map((comp) => ({
+        id: `${analysisId}:evidence:${comp.record.id}`,
+        sourceKind: comp.record.sourceKey === 'manual' ? 'MANUAL' as const : 'CSV' as const,
+        included: comp.included,
+        snapshot: snapshot(comp),
+      })),
     });
+  }
+
+  private async loadImportedRecords(userId: string, ids: readonly string[]) {
+    if (!this.marketRepository) throw new Error('Imported evidence repository is unavailable');
+    const records = await this.marketRepository.list({ scope: 'REAL_ONLY', userId });
+    const requested = new Set(ids);
+    const selected = records.filter((record) => requested.has(record.id));
+    if (selected.length !== requested.size) throw new Error('One or more imported evidence records are unavailable');
+    return selected;
   }
 }

@@ -41,6 +41,7 @@ describe('Task 2 analysis UI contracts', () => {
 
   it('replaces the complete result/action state after a second successful analysis', async () => {
     const fetchMock = vi.fn()
+      .mockResolvedValueOnce(response({ records: [] }))
       .mockResolvedValueOnce(response({ analysis: analysis('analysis:one', 'First Player') }))
       .mockResolvedValueOnce(response({ analysis: analysis('analysis:two', 'Second Player') }));
     vi.stubGlobal('fetch', fetchMock);
@@ -54,7 +55,7 @@ describe('Task 2 analysis UI contracts', () => {
     fireEvent.submit(screen.getByRole('button', { name: 'ANALYZE CARD →' }).closest('form')!);
     expect(await screen.findByRole('heading', { name: /Second Player.*RAW/i })).toBeVisible();
     expect(screen.queryByRole('heading', { name: /First Player.*RAW/i })).not.toBeInTheDocument();
-    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock).toHaveBeenCalledTimes(3);
   });
 
   it('recovers from a rejected request without clearing fields or locking retry', async () => {
@@ -68,7 +69,9 @@ describe('Task 2 analysis UI contracts', () => {
   });
 
   it('blocks an identical duplicate submission after success', async () => {
-    const fetchMock = vi.fn().mockResolvedValue(response({ analysis: analysis('analysis:once', 'First Player') }));
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(response({ records: [] }))
+      .mockResolvedValue(response({ analysis: analysis('analysis:once', 'First Player') }));
     vi.stubGlobal('fetch', fetchMock);
     render(<AnalyzeWorkspace />);
     await completeRequiredForm();
@@ -77,7 +80,7 @@ describe('Task 2 analysis UI contracts', () => {
     expect(await screen.findByRole('heading', { name: /First Player.*RAW/i })).toBeVisible();
     fireEvent.submit(formElement);
     expect(await screen.findByRole('alert')).toHaveTextContent('exact analysis was already submitted');
-    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
   it('renders automatic eligibility, forced include/exclude, and both override reasons', () => {

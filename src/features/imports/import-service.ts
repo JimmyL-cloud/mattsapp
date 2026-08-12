@@ -158,7 +158,7 @@ export class CsvImportService {
     input: Omit<CsvImportInput, 'csv'> & { csv: string },
   ): Promise<ImportReport> {
     const scope: DemoScope = input.isDemo ? 'DEMO_ONLY' : 'REAL_ONLY';
-    const existing = await this.repository.list({ scope });
+    const existing = await this.repository.list({ scope, userId: input.userId });
     const sourceIds = new Set(
       existing
         .filter((record) => record.sourceKey === input.sourceKey && record.sourceRecordId)
@@ -220,8 +220,9 @@ export class CsvImportService {
         buyerPremiumMinor: normalized.buyerPremiumMinor,
         taxMinor: normalized.taxMinor,
         currency: normalized.currency,
+        cardIdentity: normalized.cardIdentity,
         fingerprint: rowFingerprint,
-        raw,
+        raw: normalized.cardIdentity ? { ...raw, __card_identity: normalized.cardIdentity } : raw,
         isDemo: input.isDemo,
       };
 

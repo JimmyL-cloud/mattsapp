@@ -11,6 +11,7 @@ import {
 import type * as databaseSchema from '@/lib/db/schema';
 import type { DemoScope } from '@/lib/demo/policy';
 import { recordIsInScope } from '@/lib/demo/policy';
+import { createCardIdentity, type CardIdentity } from '@/features/cards/card-identity';
 
 export type ImportPersistenceRow = Readonly<{
   rowNumber: number;
@@ -35,7 +36,7 @@ export type ImportBatchPersistence = Readonly<{
 export interface MarketRecordRepository {
   insert(record: NormalizedMarketRecord): Promise<NormalizedMarketRecord>;
   persistImportBatch(input: ImportBatchPersistence): Promise<void>;
-  list(input: { scope: DemoScope }): Promise<readonly NormalizedMarketRecord[]>;
+  list(input: { scope: DemoScope; userId?: string }): Promise<readonly NormalizedMarketRecord[]>;
 }
 
 export class InMemoryMarketRecordRepository implements MarketRecordRepository {
@@ -55,10 +56,20 @@ export class InMemoryMarketRecordRepository implements MarketRecordRepository {
     for (const record of input.records) await this.insert(record);
   }
 
-  async list(input: { scope: DemoScope }): Promise<readonly NormalizedMarketRecord[]> {
+  async list(input: { scope: DemoScope; userId?: string }): Promise<readonly NormalizedMarketRecord[]> {
     return [...this.#records.values()].filter((record) =>
-      recordIsInScope(record.isDemo, input.scope),
+      recordIsInScope(record.isDemo, input.scope) && (!input.userId || record.userId === input.userId),
     );
+  }
+}
+
+function identityFromRaw(raw: Readonly<Record<string, unknown>>): CardIdentity | null {
+  const stored = raw.__card_identity;
+  if (!stored || typeof stored !== 'object') return null;
+  try {
+    return createCardIdentity(stored as Parameters<typeof createCardIdentity>[0]);
+  } catch {
+    return null;
   }
 }
 
@@ -90,6 +101,7 @@ function toNormalizedRecord(
     buyerPremiumMinor: row.buyerPremiumMinor,
     taxMinor: row.taxMinor,
     currency: row.currency,
+    cardIdentity: identityFromRaw(row.raw),
     fingerprint: row.fingerprint,
     raw: Object.freeze({ ...row.raw }),
     isDemo: row.isDemo,
@@ -154,14 +166,16 @@ export class PostgresMarketRecordRepository<
     }
   }
 
-  async list(input: { scope: DemoScope }): Promise<readonly NormalizedMarketRecord[]> {
+  async list(input: { scope: DemoScope; userId?: string }): Promise<readonly NormalizedMarketRecord[]> {
+    const conditions = [
+      eq(normalizedMarketRecords.isDemo, input.scope === 'DEMO_ONLY'),
+      isNull(normalizedMarketRecords.deletedAt),
+      ...(input.userId ? [eq(normalizedMarketRecords.userId, input.userId)] : []),
+    ];
     const rows = await this.database
       .select()
       .from(normalizedMarketRecords)
-      .where(and(
-        eq(normalizedMarketRecords.isDemo, input.scope === 'DEMO_ONLY'),
-        isNull(normalizedMarketRecords.deletedAt),
-      ));
+      .where(and(...conditions));
     return Object.freeze(rows.map(toNormalizedRecord));
   }
 

@@ -24,6 +24,19 @@ describe('CSV import', () => {
     expect(await repository.list({ scope: 'DEMO_ONLY' })).toHaveLength(0);
   });
 
+  it('accepts optional structured identity columns while preserving title-only CSV compatibility', async () => {
+    const repository = new InMemoryMarketRecordRepository();
+    const service = new CsvImportService(repository);
+    const structured = `${csv}\n`.replace(
+      'source_record_id,title,source_url,sale_price,shipping,buyer_premium,tax,currency,sale_type,status,sold_at,timezone',
+      'source_record_id,title,source_url,sale_price,shipping,buyer_premium,tax,currency,sale_type,status,sold_at,timezone,player_name,year,brand,set_name,card_number,parallel,condition,grading_company,grade',
+    ).replace('America/New_York', 'America/New_York,Caleb Williams,2024,Prizm,Prizm,101,Silver,GRADED,PSA,10');
+    const input = { csv: structured, userId: 'owner', sourceKey: 'structured-csv', sourceLabel: 'Structured CSV', importedAt: '2026-08-11T12:00:00-04:00', now: '2026-08-11T12:00:00-04:00', isDemo: false } as const;
+    expect((await service.importCsv(input)).accepted).toBe(1);
+    const record = (await repository.list({ scope: 'REAL_ONLY', userId: 'owner' }))[0];
+    expect(record.cardIdentity).toMatchObject({ playerName: 'Caleb Williams', year: 2024, cardNumber: '101', raw: false, grade: 10 });
+  });
+
   it('normalizes and persists a manually entered card record', async () => {
     const repository = new InMemoryMarketRecordRepository();
     const report = await new CsvImportService(repository).importManual({

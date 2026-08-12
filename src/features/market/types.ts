@@ -38,6 +38,8 @@ export type NormalizedMarketRecord = Readonly<{
   buyerPremiumMinor: bigint;
   taxMinor: bigint | null;
   currency: string;
+  /** Structured CSV identity. Null means the row is title-only and requires owner review before analysis. */
+  cardIdentity: import('@/features/cards/card-identity').CardIdentity | null;
   fingerprint: string;
   raw: Readonly<Record<string, unknown>>;
   isDemo: boolean;

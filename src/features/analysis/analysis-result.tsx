@@ -17,6 +17,10 @@ export function AnalysisResultView({ initialAnalysis, onChange }: { initialAnaly
   const [busyAction, setBusyAction] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [watchSaved, setWatchSaved] = useState(false);
+  const [purchaseOpen, setPurchaseOpen] = useState(false);
+  const [purchaseAmount, setPurchaseAmount] = useState('');
+  const [purchaseSource, setPurchaseSource] = useState('');
+  const [purchaseDate, setPurchaseDate] = useState(() => new Date().toISOString().slice(0, 10));
   const result = object(analysis.result);
   const collector = object(result.collectorValue);
   const resale = object(result.resaleDeal);
@@ -66,6 +70,23 @@ export function AnalysisResultView({ initialAnalysis, onChange }: { initialAnaly
     }
   }
 
+  async function recordPurchase() {
+    setBusyAction('PURCHASED');
+    setMessage(null);
+    try {
+      const response = await fetch(`/api/analyses/${encodeURIComponent(analysis.id)}/purchase`, {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ amountMinor: Math.round(Number(purchaseAmount) * 100), currency, source: purchaseSource, occurredAt: new Date(`${purchaseDate}T12:00:00Z`).toISOString() }),
+      });
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok || !body.analysis) throw new Error(typeof body.error === 'string' ? body.error : 'Purchase could not be recorded');
+      setAnalysis(body.analysis as AnalysisRecord); onChange?.(body.analysis as AnalysisRecord);
+      setPurchaseOpen(false); setMessage('Purchase and holding recorded');
+    } catch (caught) {
+      setMessage(caught instanceof Error ? caught.message : 'Network error; purchase was not recorded.');
+    } finally { setBusyAction(null); }
+  }
+
   async function copyAnalysis() {
     try {
       await navigator.clipboard.writeText(JSON.stringify(analysis, null, 2));
@@ -112,7 +133,7 @@ export function AnalysisResultView({ initialAnalysis, onChange }: { initialAnaly
       {forecasts.length ? <table><thead><tr><th>Horizon</th><th>Raw projected net</th><th>Confidence adjusted</th><th>Confidence</th></tr></thead><tbody>{forecasts.map((forecast, index) => { const adjusted = timingHorizons.find((horizon) => number(horizon.days) === number(forecast.days)); return <tr key={`${forecast.days}-${index}`}><td>{number(forecast.days)} DAYS</td><td>{money(object(forecast.rawProjectedNet).minor, currency)}</td><td>{money(object(adjusted?.adjustedProjectedNet).minor, currency)}</td><td>{Math.round(number(forecast.confidence) * 100)}%</td></tr>; })}</tbody></table> : <p className="muted">No supported forecast movement. Current evidence remains the baseline.</p>}
     </section>
 
-    <section className="panel wide table-scroll" id="raw-comps"><div className="panel-heading"><h2>Evidence Ledger</h2><span>{comps.length} MANUAL RECORDS</span></div><table><thead><tr><th>Source / Listing</th><th>Date</th><th>Observed all-in</th><th>Match</th><th>Age</th><th>Status / Reasons</th></tr></thead><tbody>{comps.map((comp, index) => {
+    <section className="panel wide table-scroll" id="raw-comps"><div className="panel-heading"><h2>Evidence Ledger</h2><span>{comps.length} REAL RECORDS</span></div><table><thead><tr><th>Source / Listing</th><th>Date</th><th>Observed all-in</th><th>Match</th><th>Age</th><th>Status / Reasons</th></tr></thead><tbody>{comps.map((comp, index) => {
       const record = object(comp.record); const match = object(comp.match); const observed = object(comp.observedAllIn); const reasons = list(comp.exclusionCodes).map(String);
       const wasOverridden = typeof comp.manuallyIncluded === 'boolean';
       const automatic = comp.automaticallyIncluded === true ? 'AUTO: INCLUDED' : 'AUTO: EXCLUDED';
@@ -122,6 +143,10 @@ export function AnalysisResultView({ initialAnalysis, onChange }: { initialAnaly
 
     <section className="panel wide table-scroll" id="calculation-tape"><div className="panel-heading"><h2>Calculation Tape</h2><span>FORMULA {text(result.formulaVersion)}</span></div><table><thead><tr><th># / Step</th><th>Formula</th><th>Output</th></tr></thead><tbody>{calculations.map((calculation, index) => <tr key={text(calculation.key, String(index))}><td>{number(calculation.sequence, index + 1)} · {text(calculation.label)}</td><td>{text(calculation.formula)}</td><td>{formattedOutput(calculation.output, text(calculation.unit, ''), currency)}</td></tr>)}</tbody></table></section>
 
-    <section className="panel wide result-actions" aria-label="Save decision and watchlist actions"><button className="primary-button" type="button" disabled={busyAction !== null} onClick={() => decision('PURCHASED')}>Mark Purchased</button><button className="secondary-button" type="button" disabled={busyAction !== null} onClick={() => decision('PASSED')}>Mark Passed</button><button className="secondary-button" type="button" disabled={busyAction !== null || watchSaved} onClick={saveWatchlist}>{watchSaved ? 'Saved to Watchlist' : 'Save to Watchlist'}</button>{message ? <p className="notice" role="status">{message}</p> : null}</section>
+    <section className="panel wide result-actions" aria-label="Save decision and watchlist actions">
+      {analysis.purchaseStatus === 'UNDECIDED' ? <button className="primary-button" type="button" disabled={busyAction !== null} onClick={() => setPurchaseOpen((value) => !value)}>Record Purchase</button> : null}
+      {purchaseOpen ? <div className="form-grid purchase-form"><label className="field">Actual all-in amount ($)<input aria-label="Actual all-in amount" type="number" min="0.01" step="0.01" value={purchaseAmount} onChange={(event) => setPurchaseAmount(event.target.value)} required /></label><label className="field">Purchase source<input aria-label="Purchase source" value={purchaseSource} onChange={(event) => setPurchaseSource(event.target.value)} required /></label><label className="field">Purchase date<input aria-label="Purchase date" type="date" value={purchaseDate} max={new Date().toISOString().slice(0, 10)} onChange={(event) => setPurchaseDate(event.target.value)} required /></label><button className="primary-button" type="button" disabled={busyAction !== null || !purchaseAmount || !purchaseSource.trim()} onClick={recordPurchase}>Save Purchase</button></div> : null}
+      {analysis.purchaseStatus === 'UNDECIDED' ? <button className="secondary-button" type="button" disabled={busyAction !== null} onClick={() => decision('PASSED')}>Mark Passed</button> : null}<button className="secondary-button" type="button" disabled={busyAction !== null || watchSaved} onClick={saveWatchlist}>{watchSaved ? 'Saved to Watchlist' : 'Save to Watchlist'}</button>{message ? <p className="notice" role="status">{message}</p> : null}
+    </section>
   </div>;
 }

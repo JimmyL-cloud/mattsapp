@@ -1,12 +1,7 @@
 import { NextResponse, type NextRequest } from 'next/server';
 import { z } from 'zod';
 import { CsvImportService } from '@/features/imports/import-service';
-import {
-  InMemoryMarketRecordRepository,
-  PostgresMarketRecordRepository,
-  type MarketRecordRepository,
-} from '@/lib/db/repositories/market-records';
-import { databaseIsConfigured, getDatabase } from '@/lib/db/client';
+import { getMarketRecordRepository } from '@/lib/db/repositories/market-runtime';
 import { getOwnerSessionFromHeaders } from '@/lib/auth/config';
 
 const requestSchema = z.object({
@@ -16,15 +11,18 @@ const requestSchema = z.object({
   isDemo: z.boolean(),
 });
 
-const runtime = globalThis as typeof globalThis & {
-  __mattsappMarketRepository?: MarketRecordRepository;
-};
-const repository = runtime.__mattsappMarketRepository ?? (
-  databaseIsConfigured()
-    ? new PostgresMarketRecordRepository(getDatabase())
-    : new InMemoryMarketRecordRepository()
-);
-runtime.__mattsappMarketRepository = repository;
+export async function GET(request: NextRequest) {
+  const owner = await getOwnerSessionFromHeaders(request.headers);
+  if (!owner) return NextResponse.json({ error: 'Owner authentication required' }, { status: 401 });
+  const records = await getMarketRecordRepository().list({ scope: 'REAL_ONLY', userId: owner.id });
+  return NextResponse.json({ records: records.map((record) => ({
+    ...record,
+    salePriceMinor: record.salePriceMinor.toString(),
+    shippingMinor: record.shippingMinor.toString(),
+    buyerPremiumMinor: record.buyerPremiumMinor.toString(),
+    taxMinor: record.taxMinor?.toString() ?? null,
+  })) });
+}
 
 export async function POST(request: NextRequest) {
   const owner = await getOwnerSessionFromHeaders(request.headers);
@@ -41,7 +39,7 @@ export async function POST(request: NextRequest) {
   }
 
   const now = new Date().toISOString();
-  const report = await new CsvImportService(repository).importCsv({
+  const report = await new CsvImportService(getMarketRecordRepository()).importCsv({
     ...parsed.data,
     userId: owner.id,
     importedAt: now,

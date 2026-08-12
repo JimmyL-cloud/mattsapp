@@ -12,7 +12,7 @@ export type DataConsoleSubmission = Readonly<{
 
 export type SubmitImport = (input: DataConsoleSubmission) => Promise<ImportReport>;
 
-const template = 'source_record_id,title,sale_price,shipping,buyer_premium,tax,currency,sale_type,status,sold_at,timezone,source_url\n';
+const template = 'source_record_id,title,sale_price,shipping,buyer_premium,tax,currency,sale_type,status,sold_at,timezone,source_url,sport,player_name,year,brand,set_name,card_number,parallel,condition,grading_company,grade\n';
 
 async function submitImportRequest(input: DataConsoleSubmission): Promise<ImportReport> {
   const response = await fetch('/api/imports', {

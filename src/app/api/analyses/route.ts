@@ -1,6 +1,7 @@
 import { NextResponse, type NextRequest } from 'next/server';
 import { ManualAnalysisService, manualAnalysisRequestSchema } from '@/features/analysis/manual-analysis-service';
 import { productionOwnerRouteDependencies, type OwnerRouteDependencies } from '@/lib/api/owner-route-dependencies';
+import { getMarketRecordRepository } from '@/lib/db/repositories/market-runtime';
 
 export function createAnalysesHandlers(dependencies: OwnerRouteDependencies = productionOwnerRouteDependencies) {
   return {
@@ -16,7 +17,7 @@ export function createAnalysesHandlers(dependencies: OwnerRouteDependencies = pr
       const parsed = manualAnalysisRequestSchema.safeParse(await request.json().catch(() => null));
       if (!parsed.success) return NextResponse.json({ error: 'Invalid analysis request', details: parsed.error.flatten() }, { status: 400 });
       try {
-        const analysis = await new ManualAnalysisService(dependencies.getRepository()).create(owner.id, parsed.data);
+        const analysis = await new ManualAnalysisService(dependencies.getRepository(), getMarketRecordRepository()).create(owner.id, parsed.data);
         return NextResponse.json({ analysis }, { status: 201 });
       } catch (error) {
         return NextResponse.json({ error: error instanceof Error ? error.message : 'Analysis failed' }, { status: 422 });

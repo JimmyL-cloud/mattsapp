@@ -1,7 +1,11 @@
+import { randomUUID } from 'node:crypto';
 import { and, desc, eq, isNull } from 'drizzle-orm';
 import type { BatchItem } from 'drizzle-orm/batch';
 import type { NeonHttpDatabase } from 'drizzle-orm/neon-http';
 import type { PurchaseStatus } from '@/features/portfolio/purchase-status';
+import type { PortfolioHolding } from '@/features/portfolio/portfolio-service';
+import type { PortfolioDecisionRow } from '@/features/portfolio/demo-portfolio';
+import { cardLabel, object } from '@/features/analysis/analysis-record';
 import {
   analyses,
   analysisEvidence,
@@ -11,6 +15,8 @@ import {
   userDecisions,
   userSettings,
   watchlistItems,
+  portfolioHoldings,
+  transactions,
 } from '@/lib/db/schema';
 import type * as databaseSchema from '@/lib/db/schema';
 
@@ -28,7 +34,7 @@ export type AnalysisWrite = Readonly<{
   currency: string;
   input: JsonRecord;
   result: JsonRecord;
-  evidence: readonly Readonly<{ id: string; included: boolean; snapshot: JsonRecord }>[];
+  evidence: readonly Readonly<{ id: string; sourceKind?: 'MANUAL' | 'CSV'; included: boolean; snapshot: JsonRecord }>[];
 }>;
 
 export type StoredAnalysis = Readonly<{
@@ -55,11 +61,27 @@ export type WatchlistItem = Readonly<{
   createdAt: string;
 }>;
 
+export type PurchaseWrite = Readonly<{
+  analysisId: string;
+  amountMinor: bigint;
+  currency: string;
+  source: string;
+  occurredAt: string;
+}>;
+
+export type PersistedPortfolio = Readonly<{
+  summary: Readonly<{ holdingCount: number; costBasisMinor: bigint; currentValueMinor: bigint | null; unrealizedProfitMinor: bigint | null; currency: string }>;
+  holdings: readonly PortfolioHolding[];
+  decisions: readonly PortfolioDecisionRow[];
+}>;
+
 export interface AnalysisWorkflowRepository {
   createAnalysis(input: AnalysisWrite): Promise<StoredAnalysis>;
   listAnalyses(userId: string): Promise<readonly StoredAnalysis[]>;
   getAnalysis(userId: string, analysisId: string): Promise<StoredAnalysis | null>;
   updateDecision(userId: string, analysisId: string, status: PurchaseStatus, reason: string | null): Promise<StoredAnalysis | null>;
+  recordPurchase(userId: string, input: PurchaseWrite): Promise<StoredAnalysis | null>;
+  loadPortfolio(userId: string): Promise<PersistedPortfolio>;
   getSettings(userId: string): Promise<{ targetRoiBps: number }>;
   updateSettings(userId: string, targetRoiBps: number): Promise<{ targetRoiBps: number }>;
   listWatchlist(userId: string): Promise<readonly WatchlistItem[]>;
@@ -82,10 +104,49 @@ function stored(write: AnalysisWrite, createdAt = write.cutoff, purchaseStatus: 
   });
 }
 
+function bigintValue(value: unknown): bigint {
+  if (typeof value === 'bigint') return value;
+  if (typeof value === 'string' || typeof value === 'number') return BigInt(value);
+  return 0n;
+}
+
+function portfolioFrom(
+  analyses: readonly StoredAnalysis[],
+  purchaseFor: (analysis: StoredAnalysis) => PurchaseWrite | null,
+): PersistedPortfolio {
+  const decisions: PortfolioDecisionRow[] = [];
+  const holdings: PortfolioHolding[] = [];
+  for (const analysis of analyses) {
+    if (analysis.purchaseStatus !== 'PURCHASED') continue;
+    const purchase = purchaseFor(analysis);
+    if (!purchase) continue;
+    const scenario = object(analysis.result.scenario);
+    const modelMaximumMinor = bigintValue(object(scenario.maximumPurchasePriceForTargetRoi).minor);
+    const label = cardLabel(analysis);
+    decisions.push(Object.freeze({
+      id: analysis.decisionId, cardLabel: label, purchaseStatus: 'PURCHASED', mattMaximumMinor: purchase.amountMinor,
+      modelMaximumMinor, varianceMinor: purchase.amountMinor - modelMaximumMinor, currency: purchase.currency,
+      reason: 'Purchase recorded', isDemo: false,
+    }));
+    holdings.push(Object.freeze({
+      id: `holding:${analysis.id}`, userId: analysis.userId, decisionId: analysis.decisionId,
+      snapshotId: analysis.snapshotId, cardId: analysis.cardId, cardLabel: label, acquiredAt: purchase.occurredAt,
+      costBasisMinor: purchase.amountMinor, currentValueMinor: null, unrealizedProfitMinor: null,
+      currency: purchase.currency, recommendedSellWindowDays: null, staleAt: null, isDemo: false, closedAt: null,
+    }));
+  }
+  const costBasisMinor = holdings.reduce((sum, holding) => sum + holding.costBasisMinor, 0n);
+  return Object.freeze({
+    summary: Object.freeze({ holdingCount: holdings.length, costBasisMinor, currentValueMinor: null, unrealizedProfitMinor: null, currency: holdings[0]?.currency ?? 'USD' }),
+    holdings: Object.freeze(holdings), decisions: Object.freeze(decisions),
+  });
+}
+
 export class InMemoryAnalysisWorkflowRepository implements AnalysisWorkflowRepository {
   readonly #analyses = new Map<string, StoredAnalysis>();
   readonly #settings = new Map<string, number>();
   readonly #watchlist = new Map<string, WatchlistItem>();
+  readonly #purchases = new Map<string, PurchaseWrite>();
 
   async createAnalysis(input: AnalysisWrite): Promise<StoredAnalysis> {
     if (this.#analyses.has(input.id)) throw new Error('Analysis already exists');
@@ -109,6 +170,22 @@ export class InMemoryAnalysisWorkflowRepository implements AnalysisWorkflowRepos
     const next = Object.freeze({ ...current, purchaseStatus, decisionReason: reason });
     this.#analyses.set(analysisId, next);
     return next;
+  }
+
+  async recordPurchase(userId: string, input: PurchaseWrite): Promise<StoredAnalysis | null> {
+    const current = await this.getAnalysis(userId, input.analysisId);
+    if (!current) return null;
+    if (current.purchaseStatus !== 'UNDECIDED') throw new Error(`Only an undecided analysis can be recorded as purchased`);
+    if (input.currency !== current.currency) throw new Error('Purchase currency does not match analysis currency');
+    const next = Object.freeze({ ...current, purchaseStatus: 'PURCHASED' as const });
+    this.#analyses.set(current.id, next);
+    this.#purchases.set(current.id, Object.freeze({ ...input }));
+    return next;
+  }
+
+  async loadPortfolio(userId: string): Promise<PersistedPortfolio> {
+    const purchased = [...this.#analyses.values()].filter((analysis) => analysis.userId === userId && analysis.purchaseStatus === 'PURCHASED');
+    return portfolioFrom(purchased, (analysis) => this.#purchases.get(analysis.id) ?? null);
   }
 
   async getSettings(userId: string): Promise<{ targetRoiBps: number }> { return { targetRoiBps: this.#settings.get(userId) ?? 1_500 }; }
@@ -142,7 +219,7 @@ export class PostgresAnalysisWorkflowRepository implements AnalysisWorkflowRepos
       }),
       this.database.insert(userDecisions).values({ id: input.decisionId, userId: input.userId, predictionSnapshotId: input.snapshotId, purchaseStatus: 'UNDECIDED', isDemo: false, decidedAt: createdAt }),
     ];
-    if (input.evidence.length) writes.push(this.database.insert(analysisEvidence).values(input.evidence.map((evidence) => ({ id: evidence.id, analysisId: input.id, sourceKind: 'MANUAL', evidenceSnapshot: evidence.snapshot, included: evidence.included }))));
+    if (input.evidence.length) writes.push(this.database.insert(analysisEvidence).values(input.evidence.map((evidence) => ({ id: evidence.id, analysisId: input.id, sourceKind: evidence.sourceKind ?? 'MANUAL', evidenceSnapshot: evidence.snapshot, included: evidence.included }))));
     // Neon HTTP rejects transaction(); batch is its supported server-side atomic
     // write mechanism and sends the complete dependent write bundle together.
     await this.database.batch(writes);
@@ -162,6 +239,36 @@ export class PostgresAnalysisWorkflowRepository implements AnalysisWorkflowRepos
     if (!analysis) return null;
     await this.database.update(userDecisions).set({ purchaseStatus, reason, decidedAt: new Date() }).where(and(eq(userDecisions.id, analysis.decisionId), eq(userDecisions.userId, userId), eq(userDecisions.isDemo, false)));
     return Object.freeze({ ...analysis, purchaseStatus });
+  }
+
+  async recordPurchase(userId: string, input: PurchaseWrite): Promise<StoredAnalysis | null> {
+    const analysis = await this.readStored(userId, input.analysisId);
+    if (!analysis) return null;
+    if (analysis.purchaseStatus !== 'UNDECIDED') throw new Error('Only an undecided analysis can be recorded as purchased');
+    if (analysis.currency !== input.currency) throw new Error('Purchase currency does not match analysis currency');
+    const occurredAt = date(input.occurredAt);
+    const holdingId = `holding:${analysis.id}`;
+    const transactionId = `transaction:${randomUUID()}`;
+    await this.database.batch([
+      this.database.update(userDecisions).set({ purchaseStatus: 'PURCHASED', reason: 'Purchase recorded', decidedAt: occurredAt }).where(and(eq(userDecisions.id, analysis.decisionId), eq(userDecisions.userId, userId), eq(userDecisions.purchaseStatus, 'UNDECIDED'), eq(userDecisions.isDemo, false))),
+      this.database.insert(portfolioHoldings).values({ id: holdingId, userId, cardCatalogItemId: analysis.cardId, predictionSnapshotId: analysis.snapshotId, acquiredAt: occurredAt, costBasisMinor: input.amountMinor, currency: input.currency, isDemo: false }),
+      this.database.insert(transactions).values({ id: transactionId, userId, holdingId, decisionId: analysis.decisionId, transactionType: 'PURCHASE', amountMinor: input.amountMinor, currency: input.currency, occurredAt, source: input.source, isDemo: false }),
+    ]);
+    return Object.freeze({ ...analysis, purchaseStatus: 'PURCHASED' });
+  }
+
+  async loadPortfolio(userId: string): Promise<PersistedPortfolio> {
+    const all = await this.listAnalyses(userId);
+    const purchased = all.filter((analysis) => analysis.purchaseStatus === 'PURCHASED');
+    if (!purchased.length) return portfolioFrom([], () => null);
+    const rows = await this.database.select().from(transactions).where(and(
+      eq(transactions.userId, userId), eq(transactions.isDemo, false), eq(transactions.transactionType, 'PURCHASE'),
+    ));
+    const byDecision = new Map(rows.map((row) => [row.decisionId, row]));
+    return portfolioFrom(purchased, (analysis) => {
+      const row = byDecision.get(analysis.decisionId);
+      return row ? { analysisId: analysis.id, amountMinor: row.amountMinor, currency: row.currency, source: row.source, occurredAt: row.occurredAt.toISOString() } : null;
+    });
   }
 
   async getSettings(userId: string): Promise<{ targetRoiBps: number }> {
