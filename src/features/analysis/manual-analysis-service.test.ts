@@ -37,4 +37,22 @@ describe('ManualAnalysisService', () => {
     const analysis = await new ManualAnalysisService(repository).create('owner-1', request, new Date('2026-08-12T00:00:00Z'));
     expect(analysis.input.targetRoiBps).toBe(2_000);
   });
+
+  it('honors an explicit false comp selection and requires its override reason', async () => {
+    const repository = new InMemoryAnalysisWorkflowRepository();
+    const excluded = manualAnalysisRequestSchema.parse({
+      ...request,
+      comps: request.comps.map((comp, index) => index === 0 ? { ...comp, included: false, overrideReason: 'Different eye appeal' } : comp),
+    });
+    const analysis = await new ManualAnalysisService(repository).create('owner-1', excluded, new Date('2026-08-12T00:00:00Z'));
+    const rawComps = analysis.result.rawComps as Array<{ included: boolean }>;
+    expect(rawComps[0]?.included).toBe(false);
+    expect((analysis.result.fairValue as { centerMinor: string }).centerMinor).toBe('13000');
+
+    const missingReason = manualAnalysisRequestSchema.parse({
+      ...request,
+      comps: request.comps.map((comp, index) => index === 0 ? { ...comp, included: false } : comp),
+    });
+    await expect(new ManualAnalysisService(repository).create('owner-1', missingReason)).rejects.toThrow('Override reason is required');
+  });
 });

@@ -102,7 +102,7 @@ export function runAnalysis(input: RunAnalysisInput) {
     const exclusionCodes: string[] = [...match.exclusionCodes];
     if (postCutoff) exclusionCodes.push('POST_CUTOFF_RECORD');
     const automaticallyIncluded = match.eligibility === 'ELIGIBLE' && !postCutoff;
-    const manuallyIncluded = comp.manualIncluded === true && !postCutoff;
+    const manuallyIncluded = comp.manualIncluded;
     if (comp.manualIncluded !== undefined && !comp.overrideReason?.trim()) {
       throw new Error(`Override reason is required for ${comp.record.id}`);
     }
@@ -114,7 +114,12 @@ export function runAnalysis(input: RunAnalysisInput) {
       observedAllIn: observedAllIn(comp.record),
       automaticallyIncluded,
       manuallyIncluded,
-      included: automaticallyIncluded || manuallyIncluded,
+      // A deliberate exclusion is authoritative even if the matching rule
+      // would include the comp. Explicit inclusions still cannot bypass a
+      // post-cutoff record because that would introduce lookahead evidence.
+      included: manuallyIncluded === undefined
+        ? automaticallyIncluded
+        : manuallyIncluded && !postCutoff,
       exclusionCodes: Object.freeze(exclusionCodes),
       overrideReason: comp.overrideReason ?? null,
     });

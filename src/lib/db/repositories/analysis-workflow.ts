@@ -1,6 +1,6 @@
 import { and, desc, eq, isNull } from 'drizzle-orm';
-import type { PgDatabase } from 'drizzle-orm/pg-core';
-import type { PgQueryResultHKT } from 'drizzle-orm/pg-core/session';
+import type { BatchItem } from 'drizzle-orm/batch';
+import type { NeonHttpDatabase } from 'drizzle-orm/neon-http';
 import type { PurchaseStatus } from '@/features/portfolio/purchase-status';
 import {
   analyses,
@@ -119,30 +119,33 @@ export class InMemoryAnalysisWorkflowRepository implements AnalysisWorkflowRepos
   async deleteWatchlist(userId: string, itemId: string): Promise<boolean> { const item = this.#watchlist.get(itemId); if (!item || item.userId !== userId) return false; this.#watchlist.delete(itemId); return true; }
 }
 
-export class PostgresAnalysisWorkflowRepository<TQueryResult extends PgQueryResultHKT> implements AnalysisWorkflowRepository {
-  constructor(private readonly database: PgDatabase<TQueryResult, typeof databaseSchema>) {}
+export class PostgresAnalysisWorkflowRepository implements AnalysisWorkflowRepository {
+  constructor(private readonly database: NeonHttpDatabase<typeof databaseSchema>) {}
 
   async createAnalysis(input: AnalysisWrite): Promise<StoredAnalysis> {
     const createdAt = date(input.cutoff);
     const cardIdentity = input.input.card && typeof input.input.card === 'object'
       ? input.input.card as JsonRecord
       : {};
-    await this.database.transaction(async (transaction) => {
-      await transaction.insert(formulaVersions).values({ id: input.formulaVersion, name: input.formulaVersion, definition: { immutable: true } }).onConflictDoNothing();
-      await transaction.insert(cardCatalogItems).values({ id: input.cardId, sport: typeof cardIdentity.sport === 'string' ? cardIdentity.sport : 'unknown', identity: cardIdentity }).onConflictDoNothing();
-      await transaction.insert(analyses).values({
+    const writes: [BatchItem<'pg'>, ...BatchItem<'pg'>[]] = [
+      this.database.insert(formulaVersions).values({ id: input.formulaVersion, name: input.formulaVersion, definition: { immutable: true } }).onConflictDoNothing(),
+      this.database.insert(cardCatalogItems).values({ id: input.cardId, sport: typeof cardIdentity.sport === 'string' ? cardIdentity.sport : 'unknown', identity: cardIdentity }).onConflictDoNothing(),
+      this.database.insert(analyses).values({
         id: input.id, userId: input.userId, cardCatalogItemId: input.cardId, formulaVersionId: input.formulaVersion,
         cutoff: createdAt, currentPriceMinor: input.currentPriceMinor, currency: input.currency,
         inputSnapshot: input.input, result: input.result, isDemo: false, createdAt,
-      });
-      await transaction.insert(predictionSnapshots).values({
+      }),
+      this.database.insert(predictionSnapshots).values({
         id: input.snapshotId, userId: input.userId, analysisId: input.id, formulaVersionId: input.formulaVersion,
         predictionCutoff: createdAt, evidenceIds: input.evidence.map((evidence) => evidence.id), input: input.input,
         result: input.result, isDemo: false, createdAt,
-      });
-      await transaction.insert(userDecisions).values({ id: input.decisionId, userId: input.userId, predictionSnapshotId: input.snapshotId, purchaseStatus: 'UNDECIDED', isDemo: false, decidedAt: createdAt });
-      if (input.evidence.length) await transaction.insert(analysisEvidence).values(input.evidence.map((evidence) => ({ id: evidence.id, analysisId: input.id, sourceKind: 'MANUAL', evidenceSnapshot: evidence.snapshot, included: evidence.included })));
-    });
+      }),
+      this.database.insert(userDecisions).values({ id: input.decisionId, userId: input.userId, predictionSnapshotId: input.snapshotId, purchaseStatus: 'UNDECIDED', isDemo: false, decidedAt: createdAt }),
+    ];
+    if (input.evidence.length) writes.push(this.database.insert(analysisEvidence).values(input.evidence.map((evidence) => ({ id: evidence.id, analysisId: input.id, sourceKind: 'MANUAL', evidenceSnapshot: evidence.snapshot, included: evidence.included }))));
+    // Neon HTTP rejects transaction(); batch is its supported server-side atomic
+    // write mechanism and sends the complete dependent write bundle together.
+    await this.database.batch(writes);
     return stored(input);
   }
 
