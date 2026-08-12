@@ -37,7 +37,7 @@ main,
 }
 
 @media (max-width: 800px) {
-  .session-controls .status {
+  .terminal-header > .session-controls {
     display: none;
   }
 }

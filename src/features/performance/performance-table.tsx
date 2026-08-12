@@ -17,7 +17,7 @@ export function PerformanceTable({ rows }: { rows: readonly OutcomeEvaluation[] 
   return <div className="table-scroll"><table className="performance-table"><thead><tr>
     <th>SNAPSHOT</th><th>HORIZON</th><th>MATURITY</th><th>STATUS</th><th>FOLLOW-THROUGH</th><th>MODEL</th><th>ACTUAL</th><th>ABS ERROR</th><th>MATT HYPOTHETICAL</th><th>MODEL HYPOTHETICAL</th><th>REALIZED</th>
   </tr></thead><tbody>{rows.map((row) => <tr key={`${row.snapshotId}-${row.horizonDays}`} data-testid="performance-row">
-    <td>{row.snapshotId}<small>DEMO / PLACEHOLDER · IMMUTABLE</small></td>
+    <td>{row.snapshotId}<small>{row.isDemo ? 'DEMO / PLACEHOLDER · ' : ''}IMMUTABLE</small></td>
     <td>{row.horizonDays}D</td><td>{row.maturityAt.slice(0, 10)}</td>
     <td className={row.status === 'MATURED' ? 'positive' : row.status === 'INVALIDATED' ? 'negative' : 'amber'}>{row.status}<small>{row.reason ?? 'CUTOFF SAFE'}</small></td>
     <td><PurchaseStatusBadge status={row.purchaseStatus} /></td>

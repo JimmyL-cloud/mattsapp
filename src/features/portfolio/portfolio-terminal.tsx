@@ -34,6 +34,7 @@ export function PortfolioTerminal({
   demoMode?: boolean;
 }) {
   const returnBps = summary.costBasisMinor === 0n ? 0 : Number(summary.unrealizedProfitMinor * 10_000n / summary.costBasisMinor);
+  if (holdings.length === 0 && decisions.length === 0) return <div className="portfolio-grid"><section className="panel portfolio-heading wide"><div><h1>Portfolio</h1><span className="muted">ACTUAL TRANSACTIONS ONLY · REAL DATA</span></div><strong>0 OPEN HOLDINGS</strong></section><section className="panel empty-state wide"><h2>No portfolio activity yet</h2><p>Mark an analysis as purchased, then record the real transaction when portfolio persistence is connected. Forecasts and watchlist intent are never shown as holdings.</p><a className="primary-button" href="/history">Review decisions</a></section></div>;
   return <div className="portfolio-grid">
     <section className="panel portfolio-heading wide">
       <div><h1>Portfolio</h1><span className="muted">ACTUAL TRANSACTIONS ONLY · {demoMode ? 'DEMO / PLACEHOLDER' : 'REAL DATA'}</span></div>

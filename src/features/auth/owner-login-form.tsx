@@ -1,27 +1,30 @@
 'use client';
 
-import { useState, type FormEvent } from 'react';
+import { useState, type FormEvent, type KeyboardEvent } from 'react';
 import { useRouter } from 'next/navigation';
 
-export function OwnerLoginForm() {
+export function OwnerLoginForm({ ownerEmail }: { ownerEmail: string }) {
   const router = useRouter();
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [revealed, setRevealed] = useState(false);
+  const [capsLock, setCapsLock] = useState(false);
+
+  function detectCapsLock(event: KeyboardEvent<HTMLInputElement>) {
+    setCapsLock(event.getModifierState('CapsLock'));
+  }
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    if (busy) return;
     setBusy(true);
     setError(null);
     const form = new FormData(event.currentTarget);
     const response = await fetch('/api/auth/owner-login', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ email: form.get('email'), password: form.get('password') }),
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ email: ownerEmail, password: form.get('password') }),
     });
-    if (response.ok) {
-      router.push('/');
-      router.refresh();
-    }
+    if (response.ok) { router.push('/'); router.refresh(); }
     else {
       const body = await response.json().catch(() => ({ error: 'Authentication failed' }));
       setError(typeof body.error === 'string' ? body.error : 'Authentication failed');
@@ -30,8 +33,10 @@ export function OwnerLoginForm() {
   }
 
   return <form className="login-form" onSubmit={submit}>
-    <label>OWNER EMAIL<input name="email" type="email" autoComplete="username" required /></label>
-    <label>PASSWORD<input name="password" type="password" autoComplete="current-password" minLength={12} required /></label>
+    <label>OWNER EMAIL<span className="owner-email">{ownerEmail}</span></label>
+    <label>PASSWORD<div className="password-field"><input name="password" type={revealed ? 'text' : 'password'} autoComplete="current-password" minLength={8} maxLength={128} onKeyDown={detectCapsLock} onKeyUp={detectCapsLock} onBlur={() => setCapsLock(false)} aria-describedby="password-requirements caps-lock-warning" required autoFocus /><button className="password-reveal" type="button" onClick={() => setRevealed((value) => !value)} aria-label={revealed ? 'Hide password' : 'Show password'} aria-pressed={revealed}>{revealed ? '◉' : '◎'}</button></div></label>
+    <p id="password-requirements" className="muted">Minimum 8 characters.</p>
+    {capsLock ? <p id="caps-lock-warning" className="caps-warning" role="status">CAPS LOCK IS ON</p> : <span id="caps-lock-warning" className="sr-only">Caps Lock is off</span>}
     <button type="submit" disabled={busy}>{busy ? 'AUTHENTICATING…' : 'ENTER TERMINAL'}</button>
     {error ? <p role="alert" className="negative">{error}</p> : null}
   </form>;

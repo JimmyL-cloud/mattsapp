@@ -35,6 +35,8 @@ export function PerformanceTerminal({
   }), [demoMode, filtered, userId]);
   const currency = filtered[0]?.currency ?? 'USD';
 
+  if (evaluations.length === 0) return <div className="performance-grid"><section className="panel performance-heading wide"><div><h1>Matt vs Model</h1><span className="muted">REAL DATA · OUT-OF-SAMPLE OUTCOME LEDGER</span></div></section><section className="panel empty-state wide"><h2>No matured outcomes yet</h2><p>Performance appears only after real decisions reach an evaluation horizon. No synthetic benchmarks or placeholder scores are shown.</p><a className="primary-button" href="/history">Review analysis history</a></section></div>;
+
   return <div className="performance-grid">
     <section className="panel performance-heading wide">
       <div><h1>Matt vs Model</h1><span className="muted">{demoMode ? 'DEMO / PLACEHOLDER' : 'REAL DATA'} · OUT-OF-SAMPLE OUTCOME LEDGER</span></div>

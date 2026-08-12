@@ -28,7 +28,7 @@ function authOptions(): BetterAuthOptions {
       provider: 'pg',
       schema: { user: users, session: authSessions, account: authAccounts, verification: authVerifications },
     }),
-    emailAndPassword: { enabled: true, minPasswordLength: 12, maxPasswordLength: 128 },
+    emailAndPassword: { enabled: true, minPasswordLength: 8, maxPasswordLength: 128 },
     session: { expiresIn: 60 * 60 * 24 * 7, updateAge: 60 * 60 * 24 },
     advanced: { trustedProxyHeaders: true, useSecureCookies: process.env.NODE_ENV === 'production' },
   };

@@ -12,8 +12,7 @@ export type DataConsoleSubmission = Readonly<{
 
 export type SubmitImport = (input: DataConsoleSubmission) => Promise<ImportReport>;
 
-const template = `source_record_id,title,sale_price,shipping,buyer_premium,tax,currency,sale_type,status,sold_at,timezone,source_url
-DEMO-001,"DEMO / PLACEHOLDER — 2023 Panini Prizm #339 Silver PSA 10",386.00,14.00,0,,USD,AUCTION,SOLD,2026-07-29T20:15:00-04:00,America/New_York,`;
+const template = 'source_record_id,title,sale_price,shipping,buyer_premium,tax,currency,sale_type,status,sold_at,timezone,source_url\n';
 
 async function submitImportRequest(input: DataConsoleSubmission): Promise<ImportReport> {
   const response = await fetch('/api/imports', {
@@ -37,7 +36,6 @@ export function DataConsole({
 }) {
   const [csv, setCsv] = useState(template);
   const [sourceLabel, setSourceLabel] = useState('Generic sold-listing CSV');
-  const [isDemo, setIsDemo] = useState(true);
   const [report, setReport] = useState<ImportReport | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -47,7 +45,7 @@ export function DataConsole({
     setBusy(true);
     setError(null);
     try {
-      setReport(await submitImport({ csv, sourceKey: 'generic-sold-csv', sourceLabel, isDemo }));
+      setReport(await submitImport({ csv, sourceKey: 'generic-sold-csv', sourceLabel, isDemo: false }));
     } catch (caught) {
       setReport(null);
       setError(caught instanceof Error ? caught.message : 'Import failed');
@@ -63,9 +61,7 @@ export function DataConsole({
           <h1>DATA CONSOLE / RAW INGESTION</h1>
           <span className="muted">CSV and manual records only; no live or completed-sale access is implied.</span>
         </div>
-        <strong className={isDemo ? 'amber' : 'positive'}>
-          IMPORT MODE: {isDemo ? 'DEMO / PLACEHOLDER' : 'REAL DATA'}
-        </strong>
+        <strong className="positive">IMPORT MODE: REAL DATA</strong>
       </section>
 
       <form className="panel import-form" onSubmit={onSubmit}>
@@ -73,14 +69,6 @@ export function DataConsole({
         <label>
           Source label
           <input value={sourceLabel} onChange={(event) => setSourceLabel(event.target.value)} required />
-        </label>
-        <label className="checkbox-label">
-          <input
-            type="checkbox"
-            checked={isDemo}
-            onChange={(event) => setIsDemo(event.target.checked)}
-          />
-          Import as demo placeholder
         </label>
         <label>
           CSV data

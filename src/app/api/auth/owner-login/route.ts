@@ -3,7 +3,7 @@ import { authenticateOwner } from '@/lib/auth/config';
 
 const credentials = z.object({
   email: z.string().email().max(320),
-  password: z.string().min(12).max(128),
+  password: z.string().min(8).max(128),
 });
 
 export async function POST(request: Request) {

@@ -7,7 +7,7 @@ import './data-console.css';
 export default async function DataPage() {
   await requireOwner();
   return (
-    <TerminalShell demoMode>
+    <TerminalShell>
       <DataConsole durableStorage={databaseIsConfigured()} />
     </TerminalShell>
   );
