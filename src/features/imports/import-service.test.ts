@@ -24,6 +24,22 @@ describe('CSV import', () => {
     expect(await repository.list({ scope: 'DEMO_ONLY' })).toHaveLength(0);
   });
 
+  it('collapses simultaneous identical imports and namespaces records by owner and demo scope', async () => {
+    const repository = new InMemoryMarketRecordRepository();
+    const service = new CsvImportService(repository);
+    const input = { csv, userId: 'owner-a', sourceKey: 'manual-csv', sourceLabel: 'Manual CSV', importedAt: '2026-08-11T12:00:00-04:00', now: '2026-08-11T12:00:00-04:00', isDemo: false } as const;
+    const simultaneous = await Promise.all([service.importCsv(input), service.importCsv(input)]);
+    expect(simultaneous.map((report) => report.accepted).sort()).toEqual([0, 1]);
+    expect(simultaneous.map((report) => report.duplicates).sort()).toEqual([0, 1]);
+    expect(simultaneous[0].batchId).not.toBe(simultaneous[1].batchId);
+
+    expect((await service.importCsv({ ...input, userId: 'owner-b' })).accepted).toBe(1);
+    expect((await service.importCsv({ ...input, isDemo: true })).accepted).toBe(1);
+    const real = await repository.list({ scope: 'REAL_ONLY' });
+    const demo = await repository.list({ scope: 'DEMO_ONLY' });
+    expect(new Set([...real, ...demo].map((record) => record.id)).size).toBe(3);
+  });
+
   it('accepts optional structured identity columns while preserving title-only CSV compatibility', async () => {
     const repository = new InMemoryMarketRecordRepository();
     const service = new CsvImportService(repository);

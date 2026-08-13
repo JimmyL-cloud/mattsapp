@@ -1,14 +1,16 @@
 import { NextResponse, type NextRequest } from 'next/server';
 import { z } from 'zod';
 import { productionOwnerRouteDependencies, type OwnerRouteDependencies } from '@/lib/api/owner-route-dependencies';
+import { financialWriteFields } from '@/lib/api/financial-write-schema';
+import { isFinancialTimestampInFuture } from '@/lib/api/financial-write-validation';
+import { logRedactedServerError } from '@/lib/api/server-error';
+import { AnalysisWorkflowConflictError } from '@/lib/db/repositories/analysis-workflow';
 
 type Context = { params: Promise<{ id: string }> };
 const purchaseSchema = z.object({
-  idempotencyKey: z.string().trim().min(8).max(128).regex(/^[A-Za-z0-9._:-]+$/),
+  ...financialWriteFields,
   amountMinor: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
   currency: z.string().trim().regex(/^[A-Za-z]{3}$/).transform((value) => value.toUpperCase()),
-  source: z.string().trim().min(1).max(200),
-  occurredAt: z.string().datetime({ offset: true }),
 });
 
 export function createPurchaseHandler(dependencies: OwnerRouteDependencies = productionOwnerRouteDependencies, now: () => Date = () => new Date()) {
@@ -17,12 +19,16 @@ export function createPurchaseHandler(dependencies: OwnerRouteDependencies = pro
     if (!owner) return NextResponse.json({ error: 'Owner authentication required' }, { status: 401 });
     const parsed = purchaseSchema.safeParse(await request.json().catch(() => null));
     if (!parsed.success) return NextResponse.json({ error: 'Invalid purchase record', details: parsed.error.flatten() }, { status: 400 });
-    if (Date.parse(parsed.data.occurredAt) > now().getTime() + 5 * 60_000) return NextResponse.json({ error: 'Purchase date cannot be in the future' }, { status: 400 });
+    if (isFinancialTimestampInFuture(parsed.data.occurredAt, now())) return NextResponse.json({ error: 'Purchase date cannot be in the future' }, { status: 400 });
     try {
       const result = await dependencies.getRepository().recordPurchase(owner.id, { analysisId: (await context.params).id, ...parsed.data, amountMinor: BigInt(parsed.data.amountMinor) });
       return result ? NextResponse.json({ analysis: result.analysis, replayed: result.replayed }, { status: result.replayed ? 200 : 201 }) : NextResponse.json({ error: 'Analysis not found' }, { status: 404 });
     } catch (error) {
-      return NextResponse.json({ error: error instanceof Error ? error.message : 'Purchase could not be recorded' }, { status: 409 });
+      logRedactedServerError('Purchase recording failed', error);
+      return NextResponse.json(
+        { error: error instanceof AnalysisWorkflowConflictError ? 'Purchase conflicts with the current analysis state' : 'Purchase could not be recorded' },
+        { status: error instanceof AnalysisWorkflowConflictError ? 409 : 500 },
+      );
     }
   };
 }

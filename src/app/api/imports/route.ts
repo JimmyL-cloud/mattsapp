@@ -10,13 +10,19 @@ const requestSchema = z.object({
   sourceLabel: z.string().trim().min(1).max(200),
   isDemo: z.boolean(),
 });
+const listSchema = z.object({ page: z.coerce.number().int().min(1).default(1), limit: z.coerce.number().int().min(1).max(200).default(100) });
 
 export async function GET(request: NextRequest) {
   const owner = await getOwnerSessionFromHeaders(request.headers);
   if (!owner) return NextResponse.json({ error: 'Owner authentication required' }, { status: 401 });
-  const records = await getMarketRecordRepository().list({ scope: 'REAL_ONLY', userId: owner.id });
-  return NextResponse.json({ records: records.map((record) => ({
-    ...record,
+  const parsed = listSchema.safeParse(Object.fromEntries(request.nextUrl.searchParams));
+  if (!parsed.success) return NextResponse.json({ error: 'Invalid import page', details: parsed.error.flatten() }, { status: 400 });
+  const records = await getMarketRecordRepository().list({ scope: 'REAL_ONLY', userId: owner.id, limit: parsed.data.limit + 1, offset: (parsed.data.page - 1) * parsed.data.limit });
+  return NextResponse.json({ page: parsed.data.page, hasMore: records.length > parsed.data.limit, records: records.slice(0, parsed.data.limit).map((record) => ({
+    id: record.id, sourceKey: record.sourceKey, sourceRecordId: record.sourceRecordId, sourceLabel: record.sourceLabel,
+    originalUrl: record.originalUrl, listingTitle: record.listingTitle, status: record.status, saleType: record.saleType,
+    occurredAt: record.occurredAt, freshnessAt: record.freshnessAt, timezone: record.timezone, currency: record.currency,
+    cardIdentity: record.cardIdentity,
     salePriceMinor: record.salePriceMinor.toString(),
     shippingMinor: record.shippingMinor.toString(),
     buyerPremiumMinor: record.buyerPremiumMinor.toString(),

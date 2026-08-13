@@ -2,6 +2,8 @@ import { NextResponse, type NextRequest } from 'next/server';
 import { ManualAnalysisService, manualAnalysisRequestSchema } from '@/features/analysis/manual-analysis-service';
 import { productionOwnerRouteDependencies, type OwnerRouteDependencies } from '@/lib/api/owner-route-dependencies';
 import { getMarketRecordRepository } from '@/lib/db/repositories/market-runtime';
+import { AnalysisWorkflowConflictError, AnalysisWorkflowValidationError } from '@/lib/db/repositories/analysis-workflow';
+import { logRedactedServerError } from '@/lib/api/server-error';
 
 export function createAnalysesHandlers(dependencies: OwnerRouteDependencies = productionOwnerRouteDependencies) {
   return {
@@ -20,7 +22,10 @@ export function createAnalysesHandlers(dependencies: OwnerRouteDependencies = pr
         const analysis = await new ManualAnalysisService(dependencies.getRepository(), getMarketRecordRepository()).create(owner.id, parsed.data);
         return NextResponse.json({ analysis }, { status: 201 });
       } catch (error) {
-        return NextResponse.json({ error: error instanceof Error ? error.message : 'Analysis failed' }, { status: 422 });
+        if (error instanceof AnalysisWorkflowValidationError) return NextResponse.json({ error: error.message }, { status: 422 });
+        if (error instanceof AnalysisWorkflowConflictError) return NextResponse.json({ error: 'Analysis request conflicts with an existing operation' }, { status: 409 });
+        logRedactedServerError('Analysis creation failed', error);
+        return NextResponse.json({ error: 'Analysis could not be completed' }, { status: 500 });
       }
     },
   };

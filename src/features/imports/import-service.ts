@@ -1,7 +1,7 @@
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { parse } from 'csv-parse/sync';
 import type { NormalizedMarketRecord } from '@/features/market/types';
-import type { MarketRecordRepository } from '@/lib/db/repositories/market-records';
+import { MarketRecordDuplicateError, type MarketRecordRepository } from '@/lib/db/repositories/market-records';
 import type { DemoScope } from '@/lib/demo/policy';
 import {
   type ImportRowError,
@@ -75,6 +75,10 @@ function batchId(input: string): string {
   return `import-${createHash('sha256').update(input).digest('hex').slice(0, 16)}`;
 }
 
+function recordId(input: { userId: string; isDemo: boolean; sourceKey: string; sourceIdentity: string }): string {
+  return `market-${createHash('sha256').update(`${input.userId}:${input.isDemo ? 'demo' : 'real'}:${input.sourceKey}:${input.sourceIdentity}`).digest('hex').slice(0, 32)}`;
+}
+
 function labeledSource(sourceLabel: string, isDemo: boolean): string {
   if (!isDemo || sourceLabel.includes('DEMO / PLACEHOLDER')) return sourceLabel;
   return `DEMO / PLACEHOLDER — ${sourceLabel}`;
@@ -94,6 +98,7 @@ export class CsvImportService {
   constructor(private readonly repository: MarketRecordRepository) {}
 
   async importCsv(input: CsvImportInput): Promise<ImportReport> {
+    const attemptId = randomUUID();
     let rows: RawImportRow[];
     try {
       rows = parse(input.csv, {
@@ -105,7 +110,7 @@ export class CsvImportService {
     } catch (error) {
       const raw = { csv: input.csv };
       const report = {
-        batchId: batchId(`${input.sourceKey}:${input.importedAt}:${input.csv}`),
+        batchId: batchId(`${input.sourceKey}:${input.importedAt}:${input.csv}:${attemptId}`),
         accepted: 0,
         rejected: 1,
         duplicates: 0,
@@ -130,7 +135,7 @@ export class CsvImportService {
       return report;
     }
 
-    return this.importRows(rows, input);
+    return this.importRows(rows, input, attemptId);
   }
 
   async importManual(input: ManualImportInput): Promise<ImportReport> {
@@ -150,21 +155,24 @@ export class CsvImportService {
       timezone: input.timezone,
     };
 
-    return this.importRows([row], { ...input, csv: JSON.stringify(row) });
+    return this.importRows([row], { ...input, csv: JSON.stringify(row) }, randomUUID());
   }
 
   private async importRows(
     rows: readonly RawImportRow[],
     input: Omit<CsvImportInput, 'csv'> & { csv: string },
+    attemptId: string,
+    concurrentRetry = false,
   ): Promise<ImportReport> {
     const scope: DemoScope = input.isDemo ? 'DEMO_ONLY' : 'REAL_ONLY';
-    const existing = await this.repository.list({ scope, userId: input.userId });
-    const sourceIds = new Set(
-      existing
-        .filter((record) => record.sourceKey === input.sourceKey && record.sourceRecordId)
-        .map((record) => record.sourceRecordId as string),
-    );
-    const fingerprints = new Set(existing.map((record) => record.fingerprint));
+    const candidates = rows.map((raw) => ({ sourceRecordId: typeof raw.source_record_id === 'string' ? raw.source_record_id.trim() : '', fingerprint: fingerprint(raw) }));
+    const existing = await this.repository.findDuplicateKeys({
+      scope, userId: input.userId, sourceKey: input.sourceKey,
+      sourceRecordIds: candidates.flatMap((candidate) => candidate.sourceRecordId ? [candidate.sourceRecordId] : []),
+      fingerprints: candidates.map((candidate) => candidate.fingerprint),
+    });
+    const sourceIds = new Set(existing.sourceRecordIds);
+    const fingerprints = new Set(existing.fingerprints);
     const results: ImportRowResult[] = [];
     const acceptedRecords: NormalizedMarketRecord[] = [];
 
@@ -198,11 +206,12 @@ export class CsvImportService {
         continue;
       }
 
-      const recordId = normalized.sourceRecordId
-        ? `${input.sourceKey}:${normalized.sourceRecordId}`
-        : `${input.sourceKey}:${rowFingerprint.slice(0, 24)}`;
+      const normalizedRecordId = recordId({
+        userId: input.userId, isDemo: input.isDemo, sourceKey: input.sourceKey,
+        sourceIdentity: normalized.sourceRecordId ?? rowFingerprint,
+      });
       const record: NormalizedMarketRecord = {
-        id: recordId,
+        id: normalizedRecordId,
         userId: input.userId,
         sourceKey: input.sourceKey,
         sourceRecordId: normalized.sourceRecordId,
@@ -232,7 +241,7 @@ export class CsvImportService {
       results.push({
         rowNumber: index + 2,
         status: 'ACCEPTED',
-        recordId,
+        recordId: normalizedRecordId,
         fingerprint: rowFingerprint,
         errors: [],
         raw,
@@ -240,21 +249,26 @@ export class CsvImportService {
     }
 
     const report = {
-      batchId: batchId(`${input.sourceKey}:${input.importedAt}:${input.csv}`),
+      batchId: batchId(`${input.sourceKey}:${input.importedAt}:${input.csv}:${attemptId}`),
       accepted: results.filter((row) => row.status === 'ACCEPTED').length,
       rejected: results.filter((row) => row.status === 'REJECTED').length,
       duplicates: results.filter((row) => row.status === 'DUPLICATE').length,
       rows: results,
     };
-    await this.repository.persistImportBatch({
-      ...report,
-      userId: input.userId,
-      sourceKey: input.sourceKey,
-      sourceLabel: labeledSource(input.sourceLabel, input.isDemo),
-      importedAt: input.importedAt,
-      isDemo: input.isDemo,
-      records: acceptedRecords,
-    });
+    try {
+      await this.repository.persistImportBatch({
+        ...report,
+        userId: input.userId,
+        sourceKey: input.sourceKey,
+        sourceLabel: labeledSource(input.sourceLabel, input.isDemo),
+        importedAt: input.importedAt,
+        isDemo: input.isDemo,
+        records: acceptedRecords,
+      });
+    } catch (error) {
+      if (error instanceof MarketRecordDuplicateError && !concurrentRetry) return this.importRows(rows, input, attemptId, true);
+      throw error;
+    }
     return report;
   }
 }

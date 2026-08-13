@@ -32,12 +32,14 @@ export function buildManualAnalysisRequest(
   form: FormState,
   comps: CompForm[],
   importedComps: readonly { marketRecordId: string; identityReviewed: boolean }[] = [],
+  idempotencyKey = 'analysis-request-test',
 ) {
   const costs = [
     { key: 'tax', label: 'Sales tax / acquisition costs', amountMinor: dollars(form.tax) },
     { key: 'grading', label: 'Grading cost', amountMinor: dollars(form.gradingCost) },
   ].filter((cost) => cost.amountMinor > 0);
   return {
+    idempotencyKey,
     card: { sport: 'football', playerName: form.playerName, year: Number(form.year), brand: form.brand || null, setName: form.setName || null, cardNumber: form.cardNumber || null, parallel: form.parallel || null, raw: form.condition === 'RAW', gradingCompanyKey: form.condition === 'GRADED' ? form.gradingCompanyKey : null, grade: form.condition === 'GRADED' ? Number(form.grade) : null },
     currency: 'USD', offer: { kind: 'FIXED_PRICE', priceMinor: dollars(form.askingPrice), shippingMinor: dollars(form.shipping), buyerPremiumBps: 0 },
     comps: comps.map((comp) => ({
@@ -60,6 +62,7 @@ export function AnalyzeWorkspace() {
   const [selectedImported, setSelectedImported] = useState<Record<string, boolean>>({});
   const [reviewedImported, setReviewedImported] = useState<Record<string, boolean>>({});
   const lastSubmitted = useRef<string | null>(null);
+  const operation = useRef<{ signature: string; idempotencyKey: string } | null>(null);
 
   useEffect(() => {
     fetch('/api/imports').then(async (response) => {
@@ -83,12 +86,15 @@ export function AnalyzeWorkspace() {
     const selected = importedEvidence.filter((record) => selectedImported[record.id]);
     const unreviewed = selected.find((record) => !record.cardIdentity && !reviewedImported[record.id]);
     if (unreviewed) { setError(`Review the title-only imported row before calculating: ${unreviewed.listingTitle}`); return; }
-    const body = buildManualAnalysisRequest(form, comps, selected.map((record) => ({ marketRecordId: record.id, identityReviewed: Boolean(reviewedImported[record.id]) })));
-    const signature = JSON.stringify(body);
+    const importedComps = selected.map((record) => ({ marketRecordId: record.id, identityReviewed: Boolean(reviewedImported[record.id]) }));
+    const unsignedBody = buildManualAnalysisRequest(form, comps, importedComps, 'signature');
+    const signature = JSON.stringify({ ...unsignedBody, idempotencyKey: undefined });
     if (signature === lastSubmitted.current) { setError('This exact analysis was already submitted. Change an input before running it again.'); return; }
+    if (operation.current?.signature !== signature) operation.current = { signature, idempotencyKey: crypto.randomUUID() };
+    const body = buildManualAnalysisRequest(form, comps, importedComps, operation.current.idempotencyKey);
     setBusy(true);
     try {
-      const response = await fetch('/api/analyses', { method: 'POST', headers: { 'content-type': 'application/json' }, body: signature });
+      const response = await fetch('/api/analyses', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
       const payload = await response.json().catch(() => ({}));
       if (!response.ok || !payload.analysis) throw new Error(typeof payload.error === 'string' ? payload.error : 'Analysis could not be completed. Your form values are preserved.');
       lastSubmitted.current = signature;
@@ -146,9 +152,9 @@ export function AnalyzeWorkspace() {
         {importedEvidence.length === 0 ? <p className="muted">No imported real evidence yet. Use Import Data to add sold records.</p> : <div className="comp-list">{importedEvidence.map((record) => {
           const selected = Boolean(selectedImported[record.id]);
           return <fieldset className="comp-card" key={record.id}><legend>{record.cardIdentity ? 'STRUCTURED CSV' : 'TITLE-ONLY CSV'}</legend>
-            <label className="field"><span><input type="checkbox" checked={selected} onChange={(event) => setSelectedImported((current) => ({ ...current, [record.id]: event.target.checked }))} /> Use in this analysis</span></label>
+            <label className="field imported-evidence-choice"><span><input type="checkbox" checked={selected} onChange={(event) => setSelectedImported((current) => ({ ...current, [record.id]: event.target.checked }))} /> Use in this analysis</span></label>
             <p><strong>{record.listingTitle}</strong><br /><span className="muted">{record.sourceLabel} · {record.occurredAt.slice(0, 10)} · {(Number(record.salePriceMinor) / 100).toLocaleString('en-US', { style: 'currency', currency: record.currency })}</span></p>
-            {record.cardIdentity ? <p className="positive">STRUCTURED IDENTITY AVAILABLE</p> : <label className="field"><span><input type="checkbox" checked={Boolean(reviewedImported[record.id])} disabled={!selected} onChange={(event) => setReviewedImported((current) => ({ ...current, [record.id]: event.target.checked }))} /> I reviewed this listing title and confirm it identifies the target card.</span></label>}
+            {record.cardIdentity ? <p className="positive">STRUCTURED IDENTITY AVAILABLE</p> : <label className="field imported-evidence-choice"><span><input type="checkbox" checked={Boolean(reviewedImported[record.id])} disabled={!selected} onChange={(event) => setReviewedImported((current) => ({ ...current, [record.id]: event.target.checked }))} /> I reviewed this listing title and confirm it identifies the target card.</span></label>}
           </fieldset>;
         })}</div>}
       </section>

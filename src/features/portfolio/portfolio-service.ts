@@ -27,6 +27,14 @@ export type PortfolioHolding = Readonly<{
   closedAt: string | null;
 }>;
 
+export type PortfolioSummary = Readonly<{
+  holdingCount: number;
+  costBasisMinor: bigint;
+  currentValueMinor: bigint | null;
+  unrealizedProfitMinor: bigint | null;
+  currency: string;
+}>;
+
 type RecordDecisionInput = {
   id: string;
   snapshotId: string;

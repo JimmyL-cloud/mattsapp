@@ -1,10 +1,11 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import { createCardIdentity, type CardIdentity, type CardIdentityInput } from '@/features/cards/card-identity';
 import { runAnalysis } from '@/features/analysis/run-analysis';
 import type { Money } from '@/lib/money/money';
-import type { AnalysisWorkflowRepository, JsonRecord, StoredAnalysis } from '@/lib/db/repositories/analysis-workflow';
+import { AnalysisWorkflowValidationError, type AnalysisWorkflowRepository, type JsonRecord, type StoredAnalysis } from '@/lib/db/repositories/analysis-workflow';
 import type { MarketRecordRepository } from '@/lib/db/repositories/market-records';
+import { isFinancialTimestampInFuture } from '@/lib/api/financial-write-validation';
 
 const nullableText = z.string().trim().max(200).nullable().optional().default(null);
 const cardSchema = z.object({
@@ -38,6 +39,7 @@ const costSchema = z.object({
 });
 
 export const manualAnalysisRequestSchema = z.object({
+  idempotencyKey: z.string().trim().min(8).max(128).regex(/^[A-Za-z0-9._:-]+$/),
   card: cardSchema,
   currency: z.string().trim().regex(/^[A-Za-z]{3}$/).transform((value) => value.toUpperCase()).default('USD'),
   cutoff: z.string().datetime({ offset: true }).optional(),
@@ -64,7 +66,13 @@ export const manualAnalysisRequestSchema = z.object({
     identityReviewed: z.boolean().default(false),
     included: z.boolean().optional(),
     overrideReason: z.string().trim().min(1).max(500).optional(),
-  })).max(100).default([]),
+  })).max(100).default([]).superRefine((comps, context) => {
+    const seen = new Set<string>();
+    comps.forEach((comp, index) => {
+      if (seen.has(comp.marketRecordId)) context.addIssue({ code: 'custom', path: [index, 'marketRecordId'], message: 'Imported evidence may be selected only once' });
+      seen.add(comp.marketRecordId);
+    });
+  }),
   acquisitionCosts: z.array(costSchema).max(30).default([]),
   fixedSellingCosts: z.array(costSchema).max(30).default([]),
   sellingFeeBps: z.number().int().min(0).max(9_999).default(0),
@@ -87,8 +95,14 @@ export class ManualAnalysisService {
   ) {}
 
   async create(userId: string, request: ManualAnalysisRequest, now = new Date()): Promise<StoredAnalysis> {
+    const { idempotencyKey, ...requestBody } = request;
+    const requestHash = createHash('sha256').update(JSON.stringify(requestBody)).digest('hex');
+    const replay = await this.repository.findAnalysisReplay(userId, idempotencyKey, requestHash);
+    if (replay) return replay;
     const settings = await this.repository.getSettings(userId);
     const cutoff = request.cutoff ?? now.toISOString();
+    if (isFinancialTimestampInFuture(cutoff, now)) throw new AnalysisWorkflowValidationError('Analysis cutoff cannot be in the future');
+    if (request.comps.some((comp) => isFinancialTimestampInFuture(comp.occurredAt, now))) throw new AnalysisWorkflowValidationError('Manual evidence date cannot be in the future');
     const target = identity(request.card);
     const currency = request.currency;
     const analysisId = `analysis:${randomUUID()}`;
@@ -168,10 +182,10 @@ export class ManualAnalysisService {
         })),
         ...request.importedComps.map((comp) => {
           const record = importedById.get(comp.marketRecordId);
-          if (!record) throw new Error(`Imported evidence is unavailable: ${comp.marketRecordId}`);
-          if (record.status !== 'SOLD') throw new Error(`Imported evidence must be a completed sale: ${record.id}`);
+          if (!record) throw new AnalysisWorkflowValidationError(`Imported evidence is unavailable: ${comp.marketRecordId}`);
+          if (record.status !== 'SOLD') throw new AnalysisWorkflowValidationError(`Imported evidence must be a completed sale: ${record.id}`);
           if (!record.cardIdentity && !comp.identityReviewed) {
-            throw new Error(`Title-only imported evidence requires explicit identity review: ${record.id}`);
+            throw new AnalysisWorkflowValidationError(`Title-only imported evidence requires explicit identity review: ${record.id}`);
           }
           return {
             record,
@@ -200,7 +214,9 @@ export class ManualAnalysisService {
       transactionCosts: money(0, currency),
       minimumTimingEdge: money(0, currency),
     };
-    const result = runAnalysis(input);
+    let result: ReturnType<typeof runAnalysis>;
+    try { result = runAnalysis(input); }
+    catch (error) { throw new AnalysisWorkflowValidationError(error instanceof Error ? error.message : 'Analysis inputs are invalid'); }
     const cardId = `card:${analysisId}`;
     return this.repository.createAnalysis({
       id: analysisId,
@@ -220,15 +236,17 @@ export class ManualAnalysisService {
         included: comp.included,
         snapshot: snapshot(comp),
       })),
+      idempotencyKey,
+      requestHash,
     });
   }
 
   private async loadImportedRecords(userId: string, ids: readonly string[]) {
-    if (!this.marketRepository) throw new Error('Imported evidence repository is unavailable');
-    const records = await this.marketRepository.list({ scope: 'REAL_ONLY', userId });
+    if (!this.marketRepository) throw new AnalysisWorkflowValidationError('Imported evidence repository is unavailable');
+    const records = await this.marketRepository.getManyByIds({ scope: 'REAL_ONLY', userId, ids });
     const requested = new Set(ids);
     const selected = records.filter((record) => requested.has(record.id));
-    if (selected.length !== requested.size) throw new Error('One or more imported evidence records are unavailable');
+    if (selected.length !== requested.size) throw new AnalysisWorkflowValidationError('One or more imported evidence records are unavailable');
     return selected;
   }
 }

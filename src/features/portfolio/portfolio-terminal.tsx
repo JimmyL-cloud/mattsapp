@@ -1,14 +1,6 @@
 import { PurchaseStatusBadge } from '@/components/terminal/purchase-status';
-import type { PortfolioHolding } from './portfolio-service';
+import type { PortfolioHolding, PortfolioSummary } from './portfolio-service';
 import type { PortfolioDecisionRow } from './demo-portfolio';
-
-export type PortfolioSummary = Readonly<{
-  holdingCount: number;
-  costBasisMinor: bigint;
-  currentValueMinor: bigint | null;
-  unrealizedProfitMinor: bigint | null;
-  currency: string;
-}>;
 
 function money(minor: bigint, currency: string): string {
   return new Intl.NumberFormat('en-US', { style: 'currency', currency }).format(Number(minor) / 100);
@@ -35,7 +27,7 @@ export function PortfolioTerminal({
   demoMode?: boolean;
 }) {
   const holdingCount = summaries.reduce((sum, summary) => sum + summary.holdingCount, 0);
-  if (holdings.length === 0 && decisions.length === 0) return <div className="portfolio-grid"><section className="panel portfolio-heading wide"><div><h1>Portfolio</h1><span className="muted">ACTUAL TRANSACTIONS ONLY · REAL DATA</span></div><strong>0 OPEN HOLDINGS</strong></section><section className="panel empty-state wide"><h2>No portfolio activity yet</h2><p>Mark an analysis as purchased, then record the real transaction when portfolio persistence is connected. Forecasts and watchlist intent are never shown as holdings.</p><a className="primary-button" href="/history">Review decisions</a></section></div>;
+  if (holdings.length === 0 && decisions.length === 0) return <div className="portfolio-grid"><section className="panel portfolio-heading wide"><div><h1>Portfolio</h1><span className="muted">ACTUAL TRANSACTIONS ONLY · REAL DATA</span></div><strong>0 OPEN HOLDINGS</strong></section><section className="panel empty-state wide"><h2>No portfolio activity yet</h2><p>Record a purchase from a completed analysis to create the first holding. Forecasts and watchlist intent are never shown as holdings.</p><a className="primary-button" href="/history">Review decisions</a></section></div>;
   return <div className="portfolio-grid">
     <section className="panel portfolio-heading wide">
       <div><h1>Portfolio</h1><span className="muted">ACTUAL TRANSACTIONS ONLY · {demoMode ? 'DEMO / PLACEHOLDER' : 'REAL DATA'}</span></div>

@@ -25,22 +25,24 @@ export function PerformanceTerminal({
 }) {
   const [horizon, setHorizon] = useState('ALL');
   const [followThrough, setFollowThrough] = useState('ALL');
+  const currencies = useMemo(() => [...new Set(evaluations.map((row) => row.currency))].sort(), [evaluations]);
+  const [currency, setCurrency] = useState(() => currencies[0] ?? 'USD');
   const filtered = useMemo(() => evaluations.filter((row) =>
     (horizon === 'ALL' || row.horizonDays === Number(horizon))
-    && (followThrough === 'ALL' || row.purchaseStatus === followThrough),
-  ), [evaluations, horizon, followThrough]);
+    && (followThrough === 'ALL' || row.purchaseStatus === followThrough)
+    && row.currency === currency,
+  ), [currency, evaluations, horizon, followThrough]);
   const summary = useMemo(() => calculatePerformance(filtered, {
     userId,
     demoScope: demoMode ? 'DEMO_ONLY' : 'REAL_ONLY',
   }), [demoMode, filtered, userId]);
-  const currency = filtered[0]?.currency ?? 'USD';
 
   if (evaluations.length === 0) return <div className="performance-grid"><section className="panel performance-heading wide"><div><h1>Matt vs Model</h1><span className="muted">REAL DATA · OUT-OF-SAMPLE OUTCOME LEDGER</span></div></section><section className="panel empty-state wide"><h2>No matured outcomes yet</h2><p>Performance appears only after real decisions reach an evaluation horizon. No synthetic benchmarks or placeholder scores are shown.</p><a className="primary-button" href="/history">Review analysis history</a></section></div>;
 
   return <div className="performance-grid">
     <section className="panel performance-heading wide">
       <div><h1>Matt vs Model</h1><span className="muted">{demoMode ? 'DEMO / PLACEHOLDER' : 'REAL DATA'} · OUT-OF-SAMPLE OUTCOME LEDGER</span></div>
-      <div className="performance-filters"><label>Horizon<select aria-label="Horizon" value={horizon} onChange={(event) => setHorizon(event.target.value)}><option>ALL</option>{[7, 30, 90, 180, 365].map((days) => <option key={days} value={days}>{days} DAYS</option>)}</select></label><label>Follow-through<select aria-label="Follow-through" value={followThrough} onChange={(event) => setFollowThrough(event.target.value)}><option>ALL</option>{['UNDECIDED', 'PURCHASED', 'PASSED', 'MISSED', 'CANCELLED'].map((status) => <option key={status}>{status}</option>)}</select></label></div>
+      <div className="performance-filters"><label>Currency<select aria-label="Currency" value={currency} onChange={(event) => setCurrency(event.target.value)}>{currencies.map((value) => <option key={value}>{value}</option>)}</select></label><label>Horizon<select aria-label="Horizon" value={horizon} onChange={(event) => setHorizon(event.target.value)}><option>ALL</option>{[7, 30, 90, 180, 365].map((days) => <option key={days} value={days}>{days} DAYS</option>)}</select></label><label>Follow-through<select aria-label="Follow-through" value={followThrough} onChange={(event) => setFollowThrough(event.target.value)}><option>ALL</option>{['UNDECIDED', 'PURCHASED', 'PASSED', 'MISSED', 'CANCELLED'].map((status) => <option key={status}>{status}</option>)}</select></label></div>
     </section>
     <section className="performance-summary wide">
       <article className="signal"><h2>REALIZED P/L — PURCHASED ONLY</h2><strong className={summary.realizedProfitMinor >= 0n ? 'positive' : 'negative'}>{money(summary.realizedProfitMinor, currency)}</strong><span>{summary.purchasedCount} PURCHASED · {summary.realizedRoiBps === null ? 'N/A' : `${(summary.realizedRoiBps / 100).toFixed(2)}% ROI`}</span></article>

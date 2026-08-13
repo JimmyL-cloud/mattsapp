@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { NextRequest } from 'next/server';
 import { createAnalysesHandlers } from '@/app/api/analyses/route';
 import { createAnalysisIdHandlers } from '@/app/api/analyses/[id]/route';
@@ -88,6 +88,11 @@ describe('authenticated analysis workflow routes', () => {
     expect(illegal.status).toBe(409);
     expect((await repository.loadPortfolio('owner-p')).holdings).toHaveLength(1);
 
+    const backdated = await reversal(request('http://test/api/analyses/analysis:purchase/purchase/reversal', 'owner-p', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ idempotencyKey: 'reversal-backdated-0001', reason: 'Invalid chronology', source: 'Seller refund', occurredAt: '2026-08-12T11:00:00Z' }) }), context('analysis:purchase'));
+    expect(backdated.status).toBe(400);
+    expect(await backdated.json()).toEqual({ error: 'Reversal date cannot precede purchase date' });
+    expect((await repository.loadPortfolio('owner-p')).holdings).toHaveLength(1);
+
     const reversed = await reversal(request('http://test/api/analyses/analysis:purchase/purchase/reversal', 'owner-p', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ idempotencyKey: 'reversal-test-0001', reason: 'Seller refunded purchase', source: 'Seller refund', occurredAt: '2026-08-12T13:00:00Z' }) }), context('analysis:purchase'));
     expect(reversed.status).toBe(201);
     expect((await repository.loadPortfolio('owner-p')).holdings).toHaveLength(0);
@@ -124,5 +129,39 @@ describe('authenticated analysis workflow routes', () => {
       expect.objectContaining({ currency: 'CAD', costBasisMinor: 20_000n, holdingCount: 1 }),
       expect.objectContaining({ currency: 'USD', costBasisMinor: 10_000n, holdingCount: 1 }),
     ]);
+  });
+
+  it('does not expose repository or database errors from write routes', async () => {
+    const databaseError = new Error('Failed query: update user_decisions set reason = $1; params: private owner reason');
+    const failingRepository = Object.create(repository) as InMemoryAnalysisWorkflowRepository;
+    failingRepository.updateDecision = async () => { throw databaseError; };
+    failingRepository.recordPurchase = async () => { throw databaseError; };
+    failingRepository.reversePurchase = async () => { throw databaseError; };
+    const failingDependencies: OwnerRouteDependencies = { ...dependencies, getRepository: () => failingRepository };
+    const failingDecision = createAnalysisIdHandlers(failingDependencies);
+    const failingPurchase = createPurchaseHandler(failingDependencies);
+    const failingReversal = createReversalHandler(failingDependencies);
+    const error = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const headers = { 'content-type': 'application/json' };
+
+    const decisionResponse = await failingDecision.PATCH(request('http://test/api/analyses/private', 'owner-private', {
+      method: 'PATCH', headers, body: JSON.stringify({ status: 'PASSED', reason: 'Private reason' }),
+    }), context('private'));
+    const purchaseResponse = await failingPurchase(request('http://test/api/analyses/private/purchase', 'owner-private', {
+      method: 'POST', headers, body: JSON.stringify({ idempotencyKey: 'private-purchase-key', amountMinor: 10_000, currency: 'USD', source: 'Private source', occurredAt: '2026-08-12T12:00:00Z' }),
+    }), context('private'));
+    const reversalResponse = await failingReversal(request('http://test/api/analyses/private/purchase/reversal', 'owner-private', {
+      method: 'POST', headers, body: JSON.stringify({ idempotencyKey: 'private-reversal-key', reason: 'Private reversal reason', source: 'Private source', occurredAt: '2026-08-12T12:00:00Z' }),
+    }), context('private'));
+
+    expect(decisionResponse.status).toBe(500);
+    expect(purchaseResponse.status).toBe(500);
+    expect(reversalResponse.status).toBe(500);
+    expect(await decisionResponse.json()).toEqual({ error: 'Decision could not be updated' });
+    expect(await purchaseResponse.json()).toEqual({ error: 'Purchase could not be recorded' });
+    expect(await reversalResponse.json()).toEqual({ error: 'Purchase reversal could not be recorded' });
+    expect(error).toHaveBeenCalledTimes(3);
+    expect(JSON.stringify(error.mock.calls)).not.toContain('private owner reason');
+    error.mockRestore();
   });
 });

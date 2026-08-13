@@ -5,6 +5,7 @@ import { InMemoryMarketRecordRepository } from '@/lib/db/repositories/market-rec
 import { CsvImportService } from '@/features/imports/import-service';
 
 const request = manualAnalysisRequestSchema.parse({
+  idempotencyKey: 'analysis-request-base',
   card: { playerName: 'Caleb Williams', year: 2024, brand: 'Prizm', setName: 'Prizm', cardNumber: '101', raw: false, gradingCompanyKey: 'psa', grade: 10 },
   currency: 'USD',
   offer: { priceMinor: 8_000, shippingMinor: 500 },
@@ -61,6 +62,7 @@ describe('ManualAnalysisService', () => {
 
     const missingReason = manualAnalysisRequestSchema.parse({
       ...request,
+      idempotencyKey: 'analysis-request-missing-reason',
       comps: request.comps.map((comp, index) => index === 0 ? { ...comp, included: false } : comp),
     });
     await expect(new ManualAnalysisService(repository).create('owner-1', missingReason)).rejects.toThrow('Override reason is required');
@@ -122,5 +124,20 @@ describe('ManualAnalysisService', () => {
     const analysis = await new ManualAnalysisService(repository, market).create('owner-1', selected, new Date('2026-08-12T00:00:00Z'));
     expect(analysis.input.request).toMatchObject({ importedComps: [{ identityReviewed: false }] });
     expect(create.mock.calls[0][0].evidence.at(-1)).toMatchObject({ sourceKind: 'CSV', identitySource: 'STRUCTURED_CSV', reviewAttestation: null });
+  });
+
+  it('rejects imported evidence owned by another account before analysis persistence', async () => {
+    const repository = new InMemoryAnalysisWorkflowRepository();
+    const create = vi.spyOn(repository, 'createAnalysis');
+    const market = new InMemoryMarketRecordRepository();
+    const report = await new CsvImportService(market).importCsv({
+      csv: 'source_record_id,title,sale_price,shipping,buyer_premium,tax,currency,sale_type,status,sold_at,timezone,player_name,year,brand,set_name,card_number,parallel,condition\nowner-a-row,Structured owner A row,125,0,0,,USD,FIXED_PRICE,SOLD,2026-08-01T12:00:00Z,UTC,Caleb Williams,2024,Prizm,Prizm,101,Silver,GRADED',
+      userId: 'owner-a', sourceKey: 'owner-a-csv', sourceLabel: 'Owner A CSV', importedAt: '2026-08-11T12:00:00Z', now: '2026-08-12T00:00:00Z', isDemo: false,
+    });
+    const selected = manualAnalysisRequestSchema.parse({ ...request, importedComps: [{ marketRecordId: report.rows[0].recordId!, identityReviewed: false }] });
+
+    await expect(new ManualAnalysisService(repository, market).create('owner-b', selected, new Date('2026-08-12T00:00:00Z')))
+      .rejects.toThrow('imported evidence records are unavailable');
+    expect(create).not.toHaveBeenCalled();
   });
 });

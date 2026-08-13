@@ -3,7 +3,7 @@ import { and, desc, eq, inArray, isNull, sql } from 'drizzle-orm';
 import type { BatchItem } from 'drizzle-orm/batch';
 import type { NeonHttpDatabase } from 'drizzle-orm/neon-http';
 import type { PurchaseStatus } from '@/features/portfolio/purchase-status';
-import type { PortfolioHolding } from '@/features/portfolio/portfolio-service';
+import type { PortfolioHolding, PortfolioSummary } from '@/features/portfolio/portfolio-service';
 import type { PortfolioDecisionRow } from '@/features/portfolio/demo-portfolio';
 import { assertTransition, requireReason } from '@/features/portfolio/decision-service';
 import { cardLabel, object } from '@/features/analysis/analysis-record';
@@ -43,6 +43,8 @@ export type AnalysisWrite = Readonly<{
     included: boolean;
     snapshot: JsonRecord;
   }>[];
+  idempotencyKey?: string;
+  requestHash?: string;
 }>;
 
 export type StoredAnalysis = Readonly<{
@@ -88,13 +90,13 @@ export type ReversalWrite = Readonly<{
 
 export type PurchaseResult = Readonly<{ analysis: StoredAnalysis; replayed: boolean }>;
 
-export type PortfolioSummary = Readonly<{
-  holdingCount: number;
-  costBasisMinor: bigint;
-  currentValueMinor: bigint | null;
-  unrealizedProfitMinor: bigint | null;
-  currency: string;
-}>;
+export class AnalysisWorkflowConflictError extends Error {
+  override readonly name = 'AnalysisWorkflowConflictError';
+}
+
+export class AnalysisWorkflowValidationError extends Error {
+  override readonly name = 'AnalysisWorkflowValidationError';
+}
 
 export type PersistedPortfolio = Readonly<{
   summaries: readonly PortfolioSummary[];
@@ -103,6 +105,7 @@ export type PersistedPortfolio = Readonly<{
 }>;
 
 export interface AnalysisWorkflowRepository {
+  findAnalysisReplay(userId: string, idempotencyKey: string, requestHash: string): Promise<StoredAnalysis | null>;
   createAnalysis(input: AnalysisWrite): Promise<StoredAnalysis>;
   listAnalyses(userId: string): Promise<readonly StoredAnalysis[]>;
   getAnalysis(userId: string, analysisId: string): Promise<StoredAnalysis | null>;
@@ -124,11 +127,30 @@ function date(value: string): Date {
   return parsed;
 }
 
+function isUniqueViolation(error: unknown): boolean {
+  if (typeof error !== 'object' || error === null) return false;
+  if ('code' in error && error.code === '23505') return true;
+  return 'cause' in error && isUniqueViolation(error.cause);
+}
+
 function stored(write: AnalysisWrite, createdAt = write.cutoff, purchaseStatus: PurchaseStatus = 'UNDECIDED'): StoredAnalysis {
   return Object.freeze({
     id: write.id, snapshotId: write.snapshotId, decisionId: write.decisionId, userId: write.userId,
     cardId: write.cardId, cutoff: write.cutoff, currency: write.currency, input: write.input,
     result: write.result, purchaseStatus, createdAt,
+  });
+}
+
+function storedFromRows(
+  analysis: typeof analyses.$inferSelect,
+  snapshot: typeof predictionSnapshots.$inferSelect,
+  decision: typeof userDecisions.$inferSelect,
+): StoredAnalysis {
+  return Object.freeze({
+    id: analysis.id, snapshotId: snapshot.id, decisionId: decision.id, userId: analysis.userId,
+    cardId: analysis.cardCatalogItemId ?? '', cutoff: analysis.cutoff.toISOString(), currency: analysis.currency,
+    input: analysis.inputSnapshot, result: analysis.result, purchaseStatus: decision.purchaseStatus as PurchaseStatus,
+    createdAt: analysis.createdAt.toISOString(),
   });
 }
 
@@ -189,8 +211,33 @@ function sameTime(left: string, right: Date | string): boolean {
   return Date.parse(left) === (right instanceof Date ? right.getTime() : Date.parse(right));
 }
 
+function assertWorkflowTransition(from: PurchaseStatus, to: PurchaseStatus, hasReversal: boolean): void {
+  try {
+    assertTransition(from, to, hasReversal);
+  } catch (error) {
+    throw new AnalysisWorkflowConflictError(error instanceof Error ? error.message : 'Invalid purchase-status transition');
+  }
+}
+
+function workflowReason(reason: string): string {
+  try {
+    return requireReason(reason);
+  } catch (error) {
+    throw new AnalysisWorkflowConflictError(error instanceof Error ? error.message : 'A decision reason is required');
+  }
+}
+
+function assertReversalChronology(reversalAt: string | Date, purchaseAt: string | Date): void {
+  const reversalTime = reversalAt instanceof Date ? reversalAt.getTime() : Date.parse(reversalAt);
+  const purchaseTime = purchaseAt instanceof Date ? purchaseAt.getTime() : Date.parse(purchaseAt);
+  if (!Number.isFinite(reversalTime) || reversalTime < purchaseTime) {
+    throw new AnalysisWorkflowValidationError('Reversal date cannot precede purchase date');
+  }
+}
+
 export class InMemoryAnalysisWorkflowRepository implements AnalysisWorkflowRepository {
   readonly #analyses = new Map<string, StoredAnalysis>();
+  readonly #analysisOperations = new Map<string, { analysisId: string; requestHash: string }>();
   readonly #settings = new Map<string, number>();
   readonly #watchlist = new Map<string, WatchlistItem>();
   readonly #purchases = new Map<string, PurchaseWrite & { holdingId: string; closedAt: string | null }>();
@@ -198,10 +245,21 @@ export class InMemoryAnalysisWorkflowRepository implements AnalysisWorkflowRepos
   readonly #reversalOperations = new Map<string, ReversalWrite>();
 
   async createAnalysis(input: AnalysisWrite): Promise<StoredAnalysis> {
+    const operationKey = input.idempotencyKey ? `${input.userId}:${input.idempotencyKey}` : null;
+    const replay = input.idempotencyKey && input.requestHash ? await this.findAnalysisReplay(input.userId, input.idempotencyKey, input.requestHash) : null;
+    if (replay) return replay;
     if (this.#analyses.has(input.id)) throw new Error('Analysis already exists');
     const value = stored(input);
     this.#analyses.set(value.id, value);
+    if (operationKey && input.requestHash) this.#analysisOperations.set(operationKey, { analysisId: value.id, requestHash: input.requestHash });
     return value;
+  }
+
+  async findAnalysisReplay(userId: string, idempotencyKey: string, requestHash: string): Promise<StoredAnalysis | null> {
+    const operation = this.#analysisOperations.get(`${userId}:${idempotencyKey}`);
+    if (!operation) return null;
+    if (operation.requestHash !== requestHash) throw new AnalysisWorkflowConflictError('Analysis idempotency key was used for different inputs');
+    return this.getAnalysis(userId, operation.analysisId);
   }
 
   async listAnalyses(userId: string): Promise<readonly StoredAnalysis[]> {
@@ -216,8 +274,8 @@ export class InMemoryAnalysisWorkflowRepository implements AnalysisWorkflowRepos
   async updateDecision(userId: string, analysisId: string, purchaseStatus: PurchaseStatus, reason: string | null): Promise<StoredAnalysis | null> {
     const current = await this.getAnalysis(userId, analysisId);
     if (!current) return null;
-    assertTransition(current.purchaseStatus, purchaseStatus, false);
-    const normalizedReason = requireReason(reason ?? '');
+    assertWorkflowTransition(current.purchaseStatus, purchaseStatus, false);
+    const normalizedReason = workflowReason(reason ?? '');
     const next = Object.freeze({ ...current, purchaseStatus, decisionReason: normalizedReason });
     this.#analyses.set(analysisId, next);
     return next;
@@ -229,7 +287,7 @@ export class InMemoryAnalysisWorkflowRepository implements AnalysisWorkflowRepos
     if (replay) {
       this.assertExactPurchase(replay, input);
       const saved = await this.getAnalysis(userId, input.analysisId);
-      if (!saved || saved.purchaseStatus !== 'PURCHASED') throw new Error('The idempotent purchase has already been reversed');
+      if (!saved || saved.purchaseStatus !== 'PURCHASED') throw new AnalysisWorkflowConflictError('The idempotent purchase has already been reversed');
       return Object.freeze({ analysis: saved, replayed: true });
     }
     const current = await this.getAnalysis(userId, input.analysisId);
@@ -238,11 +296,11 @@ export class InMemoryAnalysisWorkflowRepository implements AnalysisWorkflowRepos
     if (concurrentReplay) {
       this.assertExactPurchase(concurrentReplay, input);
       const saved = await this.getAnalysis(userId, input.analysisId);
-      if (!saved || saved.purchaseStatus !== 'PURCHASED') throw new Error('The idempotent purchase has already been reversed');
+      if (!saved || saved.purchaseStatus !== 'PURCHASED') throw new AnalysisWorkflowConflictError('The idempotent purchase has already been reversed');
       return Object.freeze({ analysis: saved, replayed: true });
     }
-    if (current.purchaseStatus !== 'UNDECIDED') throw new Error(`Only an undecided analysis can be recorded as purchased`);
-    if (input.currency !== current.currency) throw new Error('Purchase currency does not match analysis currency');
+    if (current.purchaseStatus !== 'UNDECIDED') throw new AnalysisWorkflowConflictError('Only an undecided analysis can be recorded as purchased');
+    if (input.currency !== current.currency) throw new AnalysisWorkflowConflictError('Purchase currency does not match analysis currency');
     const next = Object.freeze({ ...current, purchaseStatus: 'PURCHASED' as const });
     this.#purchaseOperations.set(key, Object.freeze({ ...input }));
     this.#analyses.set(current.id, next);
@@ -260,10 +318,11 @@ export class InMemoryAnalysisWorkflowRepository implements AnalysisWorkflowRepos
     }
     const current = await this.getAnalysis(userId, input.analysisId);
     if (!current) return null;
-    assertTransition(current.purchaseStatus, 'CANCELLED', true);
-    const normalizedReason = requireReason(input.reason);
+    assertWorkflowTransition(current.purchaseStatus, 'CANCELLED', true);
+    const normalizedReason = workflowReason(input.reason);
     const purchase = this.#purchases.get(current.id);
-    if (!purchase || purchase.closedAt !== null) throw new Error('An open purchased holding is required for reversal');
+    if (!purchase || purchase.closedAt !== null) throw new AnalysisWorkflowConflictError('An open purchased holding is required for reversal');
+    assertReversalChronology(input.occurredAt, purchase.occurredAt);
     const next = Object.freeze({ ...current, purchaseStatus: 'CANCELLED' as const, decisionReason: normalizedReason });
     this.#reversalOperations.set(key, Object.freeze({ ...input, reason: normalizedReason }));
     this.#purchases.set(current.id, Object.freeze({ ...purchase, closedAt: input.occurredAt }));
@@ -281,11 +340,11 @@ export class InMemoryAnalysisWorkflowRepository implements AnalysisWorkflowRepos
   }
 
   private assertExactPurchase(saved: PurchaseWrite, input: PurchaseWrite): void {
-    if (saved.analysisId !== input.analysisId || saved.amountMinor !== input.amountMinor || saved.currency !== input.currency || saved.source !== input.source || !sameTime(saved.occurredAt, input.occurredAt)) throw new Error('Idempotency key was already used for a different purchase');
+    if (saved.analysisId !== input.analysisId || saved.amountMinor !== input.amountMinor || saved.currency !== input.currency || saved.source !== input.source || !sameTime(saved.occurredAt, input.occurredAt)) throw new AnalysisWorkflowConflictError('Idempotency key was already used for a different purchase');
   }
 
   private assertExactReversal(saved: ReversalWrite, input: ReversalWrite): void {
-    if (saved.analysisId !== input.analysisId || saved.reason !== input.reason || saved.source !== input.source || !sameTime(saved.occurredAt, input.occurredAt)) throw new Error('Idempotency key was already used for a different reversal');
+    if (saved.analysisId !== input.analysisId || saved.reason !== input.reason || saved.source !== input.source || !sameTime(saved.occurredAt, input.occurredAt)) throw new AnalysisWorkflowConflictError('Idempotency key was already used for a different reversal');
   }
 
   async getSettings(userId: string): Promise<{ targetRoiBps: number }> { return { targetRoiBps: this.#settings.get(userId) ?? 1_500 }; }
@@ -310,7 +369,7 @@ export class PostgresAnalysisWorkflowRepository implements AnalysisWorkflowRepos
       this.database.insert(analyses).values({
         id: input.id, userId: input.userId, cardCatalogItemId: input.cardId, formulaVersionId: input.formulaVersion,
         cutoff: createdAt, currentPriceMinor: input.currentPriceMinor, currency: input.currency,
-        inputSnapshot: input.input, result: input.result, isDemo: false, createdAt,
+        inputSnapshot: input.input, result: input.result, idempotencyKey: input.idempotencyKey, requestHash: input.requestHash, isDemo: false, createdAt,
       }),
       this.database.insert(predictionSnapshots).values({
         id: input.snapshotId, userId: input.userId, analysisId: input.id, formulaVersionId: input.formulaVersion,
@@ -335,8 +394,24 @@ export class PostgresAnalysisWorkflowRepository implements AnalysisWorkflowRepos
     }))));
     // Neon HTTP rejects transaction(); batch is its supported server-side atomic
     // write mechanism and sends the complete dependent write bundle together.
-    await this.database.batch(writes);
+    try { await this.database.batch(writes); }
+    catch (error) {
+      if (isUniqueViolation(error)) {
+        const replay = input.idempotencyKey && input.requestHash ? await this.findAnalysisReplay(input.userId, input.idempotencyKey, input.requestHash) : null;
+        if (replay) return replay;
+      }
+      throw error;
+    }
     return stored(input);
+  }
+
+  async findAnalysisReplay(userId: string, idempotencyKey: string, requestHash: string): Promise<StoredAnalysis | null> {
+    const row = (await this.database.select({ id: analyses.id, requestHash: analyses.requestHash }).from(analyses).where(and(
+      eq(analyses.userId, userId), eq(analyses.isDemo, false), eq(analyses.idempotencyKey, idempotencyKey),
+    ))).at(0);
+    if (!row) return null;
+    if (row.requestHash !== requestHash) throw new AnalysisWorkflowConflictError('Analysis idempotency key was used for different inputs');
+    return this.readStored(userId, row.id);
   }
 
   async listAnalyses(userId: string): Promise<readonly StoredAnalysis[]> {
@@ -350,10 +425,10 @@ export class PostgresAnalysisWorkflowRepository implements AnalysisWorkflowRepos
   async updateDecision(userId: string, analysisId: string, purchaseStatus: PurchaseStatus, reason: string | null): Promise<StoredAnalysis | null> {
     const analysis = await this.readStored(userId, analysisId);
     if (!analysis) return null;
-    assertTransition(analysis.purchaseStatus, purchaseStatus, false);
-    const normalizedReason = requireReason(reason ?? '');
+    assertWorkflowTransition(analysis.purchaseStatus, purchaseStatus, false);
+    const normalizedReason = workflowReason(reason ?? '');
     const changed = await this.database.update(userDecisions).set({ purchaseStatus, reason: normalizedReason, decidedAt: new Date() }).where(and(eq(userDecisions.id, analysis.decisionId), eq(userDecisions.userId, userId), eq(userDecisions.purchaseStatus, analysis.purchaseStatus), eq(userDecisions.isDemo, false))).returning({ id: userDecisions.id });
-    if (changed.length !== 1) throw new Error('Decision changed concurrently; reload before retrying');
+    if (changed.length !== 1) throw new AnalysisWorkflowConflictError('Decision changed concurrently; reload before retrying');
     return Object.freeze({ ...analysis, purchaseStatus });
   }
 
@@ -362,8 +437,8 @@ export class PostgresAnalysisWorkflowRepository implements AnalysisWorkflowRepos
     if (existing) return this.replayPurchase(userId, input, existing);
     const analysis = await this.readStored(userId, input.analysisId);
     if (!analysis) return null;
-    if (analysis.purchaseStatus !== 'UNDECIDED') throw new Error('Only an undecided analysis can be recorded as purchased');
-    if (analysis.currency !== input.currency) throw new Error('Purchase currency does not match analysis currency');
+    if (analysis.purchaseStatus !== 'UNDECIDED') throw new AnalysisWorkflowConflictError('Only an undecided analysis can be recorded as purchased');
+    if (analysis.currency !== input.currency) throw new AnalysisWorkflowConflictError('Purchase currency does not match analysis currency');
     const occurredAt = date(input.occurredAt);
     const holdingId = `holding:${analysis.id}`;
     const transactionId = operationId(userId, 'purchase', input.idempotencyKey);
@@ -391,7 +466,7 @@ export class PostgresAnalysisWorkflowRepository implements AnalysisWorkflowRepos
       if (inserted.rows.length === 0) {
         const concurrent = await this.readOperation(userId, input.idempotencyKey);
         if (concurrent) return this.replayPurchase(userId, input, concurrent);
-        throw new Error('Purchase state changed concurrently; reload before retrying');
+        throw new AnalysisWorkflowConflictError('Purchase state changed concurrently; reload before retrying');
       }
     } catch (error) {
       const committed = await this.readOperation(userId, input.idempotencyKey);
@@ -399,7 +474,7 @@ export class PostgresAnalysisWorkflowRepository implements AnalysisWorkflowRepos
       throw error;
     }
     const committed = await this.readOperation(userId, input.idempotencyKey);
-    if (!committed) throw new Error('Purchase state changed concurrently; reload before retrying');
+    if (!committed) throw new AnalysisWorkflowConflictError('Purchase state changed concurrently; reload before retrying');
     return Object.freeze({ analysis: Object.freeze({ ...analysis, purchaseStatus: 'PURCHASED' }), replayed: false });
   }
 
@@ -408,13 +483,14 @@ export class PostgresAnalysisWorkflowRepository implements AnalysisWorkflowRepos
     if (existing) return this.replayReversal(userId, input, existing);
     const analysis = await this.readStored(userId, input.analysisId);
     if (!analysis) return null;
-    assertTransition(analysis.purchaseStatus, 'CANCELLED', true);
-    const reason = requireReason(input.reason);
+    assertWorkflowTransition(analysis.purchaseStatus, 'CANCELLED', true);
+    const reason = workflowReason(input.reason);
     const holding = (await this.database.select().from(portfolioHoldings).where(and(eq(portfolioHoldings.userId, userId), eq(portfolioHoldings.predictionSnapshotId, analysis.snapshotId), eq(portfolioHoldings.isDemo, false), isNull(portfolioHoldings.closedAt)))).at(0);
-    if (!holding) throw new Error('An open purchased holding is required for reversal');
+    if (!holding) throw new AnalysisWorkflowConflictError('An open purchased holding is required for reversal');
     const purchase = (await this.database.select().from(transactions).where(and(eq(transactions.userId, userId), eq(transactions.holdingId, holding.id), eq(transactions.transactionType, 'PURCHASE'), eq(transactions.isDemo, false)))).at(0);
     if (!purchase) throw new Error('The purchase transaction is missing');
     const occurredAt = date(input.occurredAt);
+    assertReversalChronology(occurredAt, purchase.occurredAt);
     const reversalId = `reversal:${purchase.id}`;
     try {
       const inserted = await this.database.execute<{ id: string }>(sql`
@@ -440,7 +516,7 @@ export class PostgresAnalysisWorkflowRepository implements AnalysisWorkflowRepos
       if (inserted.rows.length === 0) {
         const concurrent = await this.readOperation(userId, input.idempotencyKey);
         if (concurrent) return this.replayReversal(userId, input, concurrent);
-        throw new Error('Purchase reversal state changed concurrently; reload before retrying');
+        throw new AnalysisWorkflowConflictError('Purchase reversal state changed concurrently; reload before retrying');
       }
     } catch (error) {
       const committed = await this.readOperation(userId, input.idempotencyKey);
@@ -448,26 +524,51 @@ export class PostgresAnalysisWorkflowRepository implements AnalysisWorkflowRepos
       throw error;
     }
     const committed = await this.readOperation(userId, input.idempotencyKey);
-    if (!committed) throw new Error('Purchase reversal state changed concurrently; reload before retrying');
+    if (!committed) throw new AnalysisWorkflowConflictError('Purchase reversal state changed concurrently; reload before retrying');
     return Object.freeze({ analysis: Object.freeze({ ...analysis, purchaseStatus: 'CANCELLED' }), replayed: false });
   }
 
   async loadPortfolio(userId: string): Promise<PersistedPortfolio> {
-    const all = await this.listAnalyses(userId);
     const open = await this.database.select().from(portfolioHoldings).where(and(eq(portfolioHoldings.userId, userId), eq(portfolioHoldings.isDemo, false), isNull(portfolioHoldings.closedAt)));
-    if (!open.length) return portfolioFrom(all, []);
-    const purchaseRows = await this.database.select().from(transactions).where(and(eq(transactions.userId, userId), eq(transactions.isDemo, false), eq(transactions.transactionType, 'PURCHASE'), inArray(transactions.holdingId, open.map((holding) => holding.id))));
+    if (!open.length) return portfolioFrom([], []);
+    const snapshotIds = open.map((holding) => {
+      if (!holding.predictionSnapshotId) throw new Error(`Holding ${holding.id} is missing its prediction snapshot`);
+      return holding.predictionSnapshotId;
+    });
+    const snapshotRows = await this.database.select().from(predictionSnapshots).where(and(
+      eq(predictionSnapshots.userId, userId), eq(predictionSnapshots.isDemo, false), inArray(predictionSnapshots.id, snapshotIds),
+    ));
+    const [analysisRows, decisionRows, purchaseRows] = await Promise.all([
+      this.database.select().from(analyses).where(and(
+        eq(analyses.userId, userId), eq(analyses.isDemo, false), inArray(analyses.id, snapshotRows.map((snapshot) => snapshot.analysisId)),
+      )),
+      this.database.select().from(userDecisions).where(and(
+        eq(userDecisions.userId, userId), eq(userDecisions.isDemo, false), inArray(userDecisions.predictionSnapshotId, snapshotIds),
+      )),
+      this.database.select().from(transactions).where(and(
+        eq(transactions.userId, userId), eq(transactions.isDemo, false), eq(transactions.transactionType, 'PURCHASE'), inArray(transactions.holdingId, open.map((holding) => holding.id)),
+      )),
+    ]);
+    const analysisById = new Map(analysisRows.map((analysis) => [analysis.id, analysis]));
+    const decisionBySnapshot = new Map(decisionRows.map((decision) => [decision.predictionSnapshotId, decision]));
+    const storedBySnapshot = new Map(snapshotRows.map((snapshot): [string, StoredAnalysis] => {
+      const analysis = analysisById.get(snapshot.analysisId);
+      if (!analysis) throw new Error(`Snapshot ${snapshot.id} references an unavailable analysis`);
+      const decision = decisionBySnapshot.get(snapshot.id);
+      if (!decision) throw new Error(`Snapshot ${snapshot.id} references an unavailable decision`);
+      return [snapshot.id, storedFromRows(analysis, snapshot, decision)];
+    }));
+    const portfolioAnalyses = [...storedBySnapshot.values()];
     const purchaseByHolding = new Map(purchaseRows.map((row) => [row.holdingId, row]));
-    const analysisBySnapshot = new Map(all.map((analysis) => [analysis.snapshotId, analysis]));
     const rows = open.map((holding): HoldingRead => {
       if (!holding.predictionSnapshotId) throw new Error(`Holding ${holding.id} is missing its prediction snapshot`);
-      const analysis = analysisBySnapshot.get(holding.predictionSnapshotId);
+      const analysis = storedBySnapshot.get(holding.predictionSnapshotId);
       if (!analysis) throw new Error(`Holding ${holding.id} references an unavailable analysis snapshot`);
       const purchase = purchaseByHolding.get(holding.id);
       if (!purchase || purchase.amountMinor !== holding.costBasisMinor || purchase.currency !== holding.currency) throw new Error(`Holding ${holding.id} does not match its purchase transaction`);
       return { id: holding.id, analysisId: analysis.id, snapshotId: holding.predictionSnapshotId, cardId: holding.cardCatalogItemId, acquiredAt: holding.acquiredAt.toISOString(), costBasisMinor: holding.costBasisMinor, currency: holding.currency, closedAt: holding.closedAt?.toISOString() ?? null };
     });
-    return portfolioFrom(all, rows);
+    return portfolioFrom(portfolioAnalyses, rows);
   }
 
   async getSettings(userId: string): Promise<{ targetRoiBps: number }> {
@@ -506,17 +607,17 @@ export class PostgresAnalysisWorkflowRepository implements AnalysisWorkflowRepos
 
   private async replayPurchase(userId: string, input: PurchaseWrite, row: typeof transactions.$inferSelect): Promise<PurchaseResult> {
     const analysis = await this.readStored(userId, input.analysisId);
-    if (!analysis) throw new Error('Idempotency key belongs to an unavailable purchase');
-    if (row.transactionType !== 'PURCHASE' || row.decisionId !== analysis.decisionId || row.amountMinor !== input.amountMinor || row.currency !== input.currency || row.source !== input.source || !sameTime(input.occurredAt, row.occurredAt)) throw new Error('Idempotency key was already used for a different purchase');
-    if (analysis.purchaseStatus !== 'PURCHASED') throw new Error('The idempotent purchase has already been reversed');
+    if (!analysis) throw new AnalysisWorkflowConflictError('Idempotency key belongs to an unavailable purchase');
+    if (row.transactionType !== 'PURCHASE' || row.decisionId !== analysis.decisionId || row.amountMinor !== input.amountMinor || row.currency !== input.currency || row.source !== input.source || !sameTime(input.occurredAt, row.occurredAt)) throw new AnalysisWorkflowConflictError('Idempotency key was already used for a different purchase');
+    if (analysis.purchaseStatus !== 'PURCHASED') throw new AnalysisWorkflowConflictError('The idempotent purchase has already been reversed');
     return Object.freeze({ analysis, replayed: true });
   }
 
   private async replayReversal(userId: string, input: ReversalWrite, row: typeof transactions.$inferSelect): Promise<PurchaseResult> {
     const analysis = await this.readStored(userId, input.analysisId);
-    if (!analysis) throw new Error('Idempotency key belongs to an unavailable reversal');
-    if (row.transactionType !== 'REVERSAL' || row.decisionId !== analysis.decisionId || row.source !== input.source || row.notes !== input.reason || !sameTime(input.occurredAt, row.occurredAt)) throw new Error('Idempotency key was already used for a different reversal');
-    if (analysis.purchaseStatus !== 'CANCELLED') throw new Error('Reversal state is inconsistent');
+    if (!analysis) throw new AnalysisWorkflowConflictError('Idempotency key belongs to an unavailable reversal');
+    if (row.transactionType !== 'REVERSAL' || row.decisionId !== analysis.decisionId || row.source !== input.source || row.notes !== input.reason || !sameTime(input.occurredAt, row.occurredAt)) throw new AnalysisWorkflowConflictError('Idempotency key was already used for a different reversal');
+    if (analysis.purchaseStatus !== 'CANCELLED') throw new AnalysisWorkflowConflictError('Reversal state is inconsistent');
     return Object.freeze({ analysis, replayed: true });
   }
 
@@ -527,6 +628,6 @@ export class PostgresAnalysisWorkflowRepository implements AnalysisWorkflowRepos
     if (!snapshot) throw new Error(`Analysis ${analysisId} is missing its immutable snapshot`);
     const decision = (await this.database.select().from(userDecisions).where(and(eq(userDecisions.userId, userId), eq(userDecisions.isDemo, false), eq(userDecisions.predictionSnapshotId, snapshot.id)))).at(0);
     if (!decision) throw new Error(`Analysis ${analysisId} is missing its decision`);
-    return Object.freeze({ id: row.id, snapshotId: snapshot.id, decisionId: decision.id, userId: row.userId, cardId: row.cardCatalogItemId ?? '', cutoff: row.cutoff.toISOString(), currency: row.currency, input: row.inputSnapshot, result: row.result, purchaseStatus: decision.purchaseStatus as PurchaseStatus, createdAt: row.createdAt.toISOString() });
+    return storedFromRows(row, snapshot, decision);
   }
 }
