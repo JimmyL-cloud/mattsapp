@@ -539,6 +539,7 @@ export const watchlistItems = pgTable(
 export const userSettings = pgTable('user_settings', {
   userId: text('user_id').primaryKey().references(() => users.id, { onDelete: 'cascade' }),
   targetRoiBps: integer('target_roi_bps').notNull().default(1_500),
+  showTraderImportTools: boolean('show_trader_import_tools').notNull().default(false),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 });
 

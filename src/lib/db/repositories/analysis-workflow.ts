@@ -104,6 +104,11 @@ export type PersistedPortfolio = Readonly<{
   decisions: readonly PortfolioDecisionRow[];
 }>;
 
+export type UserSettings = Readonly<{
+  targetRoiBps: number;
+  showTraderImportTools: boolean;
+}>;
+
 export interface AnalysisWorkflowRepository {
   findAnalysisReplay(userId: string, idempotencyKey: string, requestHash: string): Promise<StoredAnalysis | null>;
   createAnalysis(input: AnalysisWrite): Promise<StoredAnalysis>;
@@ -113,8 +118,8 @@ export interface AnalysisWorkflowRepository {
   recordPurchase(userId: string, input: PurchaseWrite): Promise<PurchaseResult | null>;
   reversePurchase(userId: string, input: ReversalWrite): Promise<PurchaseResult | null>;
   loadPortfolio(userId: string): Promise<PersistedPortfolio>;
-  getSettings(userId: string): Promise<{ targetRoiBps: number }>;
-  updateSettings(userId: string, targetRoiBps: number): Promise<{ targetRoiBps: number }>;
+  getSettings(userId: string): Promise<UserSettings>;
+  updateSettings(userId: string, settings: UserSettings): Promise<UserSettings>;
   listWatchlist(userId: string): Promise<readonly WatchlistItem[]>;
   saveWatchlist(item: WatchlistItem): Promise<WatchlistItem>;
   updateWatchlist(userId: string, itemId: string, patch: Pick<WatchlistItem, 'notes' | 'isStarred'>): Promise<WatchlistItem | null>;
@@ -238,7 +243,7 @@ function assertReversalChronology(reversalAt: string | Date, purchaseAt: string 
 export class InMemoryAnalysisWorkflowRepository implements AnalysisWorkflowRepository {
   readonly #analyses = new Map<string, StoredAnalysis>();
   readonly #analysisOperations = new Map<string, { analysisId: string; requestHash: string }>();
-  readonly #settings = new Map<string, number>();
+  readonly #settings = new Map<string, UserSettings>();
   readonly #watchlist = new Map<string, WatchlistItem>();
   readonly #purchases = new Map<string, PurchaseWrite & { holdingId: string; closedAt: string | null }>();
   readonly #purchaseOperations = new Map<string, PurchaseWrite>();
@@ -347,8 +352,8 @@ export class InMemoryAnalysisWorkflowRepository implements AnalysisWorkflowRepos
     if (saved.analysisId !== input.analysisId || saved.reason !== input.reason || saved.source !== input.source || !sameTime(saved.occurredAt, input.occurredAt)) throw new AnalysisWorkflowConflictError('Idempotency key was already used for a different reversal');
   }
 
-  async getSettings(userId: string): Promise<{ targetRoiBps: number }> { return { targetRoiBps: this.#settings.get(userId) ?? 1_500 }; }
-  async updateSettings(userId: string, targetRoiBps: number): Promise<{ targetRoiBps: number }> { this.#settings.set(userId, targetRoiBps); return { targetRoiBps }; }
+  async getSettings(userId: string): Promise<UserSettings> { return this.#settings.get(userId) ?? { targetRoiBps: 1_500, showTraderImportTools: false }; }
+  async updateSettings(userId: string, settings: UserSettings): Promise<UserSettings> { const value = Object.freeze({ ...settings }); this.#settings.set(userId, value); return value; }
   async listWatchlist(userId: string): Promise<readonly WatchlistItem[]> { return Object.freeze([...this.#watchlist.values()].filter((item) => item.userId === userId).sort((a, b) => Number(b.isStarred) - Number(a.isStarred) || b.createdAt.localeCompare(a.createdAt))); }
   async saveWatchlist(item: WatchlistItem): Promise<WatchlistItem> { this.#watchlist.set(item.id, item); return item; }
   async updateWatchlist(userId: string, itemId: string, patch: Pick<WatchlistItem, 'notes' | 'isStarred'>): Promise<WatchlistItem | null> { const item = this.#watchlist.get(itemId); if (!item || item.userId !== userId) return null; const next = Object.freeze({ ...item, ...patch }); this.#watchlist.set(itemId, next); return next; }
@@ -571,14 +576,14 @@ export class PostgresAnalysisWorkflowRepository implements AnalysisWorkflowRepos
     return portfolioFrom(portfolioAnalyses, rows);
   }
 
-  async getSettings(userId: string): Promise<{ targetRoiBps: number }> {
+  async getSettings(userId: string): Promise<UserSettings> {
     const row = (await this.database.select().from(userSettings).where(eq(userSettings.userId, userId))).at(0);
-    return { targetRoiBps: row?.targetRoiBps ?? 1_500 };
+    return { targetRoiBps: row?.targetRoiBps ?? 1_500, showTraderImportTools: row?.showTraderImportTools ?? false };
   }
 
-  async updateSettings(userId: string, targetRoiBps: number): Promise<{ targetRoiBps: number }> {
-    await this.database.insert(userSettings).values({ userId, targetRoiBps, updatedAt: new Date() }).onConflictDoUpdate({ target: userSettings.userId, set: { targetRoiBps, updatedAt: new Date() } });
-    return { targetRoiBps };
+  async updateSettings(userId: string, settings: UserSettings): Promise<UserSettings> {
+    await this.database.insert(userSettings).values({ userId, ...settings, updatedAt: new Date() }).onConflictDoUpdate({ target: userSettings.userId, set: { ...settings, updatedAt: new Date() } });
+    return settings;
   }
 
   async listWatchlist(userId: string): Promise<readonly WatchlistItem[]> {

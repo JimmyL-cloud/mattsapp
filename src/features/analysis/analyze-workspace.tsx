@@ -1,5 +1,6 @@
 'use client';
 
+import Link from 'next/link';
 import { useEffect, useRef, useState, type FormEvent } from 'react';
 import { AnalysisResultView } from './analysis-result';
 import type { AnalysisRecord } from './analysis-record';
@@ -58,6 +59,7 @@ export function AnalyzeWorkspace() {
   const [analysis, setAnalysis] = useState<AnalysisRecord | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [showTraderImportTools, setShowTraderImportTools] = useState(false);
   const [importedEvidence, setImportedEvidence] = useState<ImportedEvidence[]>([]);
   const [selectedImported, setSelectedImported] = useState<Record<string, boolean>>({});
   const [reviewedImported, setReviewedImported] = useState<Record<string, boolean>>({});
@@ -65,10 +67,14 @@ export function AnalyzeWorkspace() {
   const operation = useRef<{ signature: string; idempotencyKey: string } | null>(null);
 
   useEffect(() => {
-    fetch('/api/imports').then(async (response) => {
+    fetch('/api/settings').then(async (response) => {
       const body = await response.json().catch(() => ({}));
-      if (!response.ok) throw new Error(typeof body.error === 'string' ? body.error : 'Imported evidence could not be loaded');
-      setImportedEvidence(Array.isArray(body.records) ? body.records : []);
+      if (!response.ok || body.settings?.showTraderImportTools !== true) return;
+      setShowTraderImportTools(true);
+      const importsResponse = await fetch('/api/imports');
+      const importsBody = await importsResponse.json().catch(() => ({}));
+      if (!importsResponse.ok) throw new Error(typeof importsBody.error === 'string' ? importsBody.error : 'Imported evidence could not be loaded');
+      setImportedEvidence(Array.isArray(importsBody.records) ? importsBody.records : []);
     }).catch((caught: unknown) => setError(caught instanceof Error ? caught.message : 'Imported evidence could not be loaded'));
   }, []);
 
@@ -148,8 +154,8 @@ export function AnalyzeWorkspace() {
         </fieldset>)}</div>
       </section>
 
-      <section className="panel form-section comps-section"><div className="section-number">04</div><div><h2>Imported CSV evidence</h2><p className="muted">Select persisted sold records to add to this calculation. Rows without structured identity must be reviewed before they can be used.</p></div>
-        {importedEvidence.length === 0 ? <p className="muted">No imported real evidence yet. Use Import Data to add sold records.</p> : <div className="comp-list">{importedEvidence.map((record) => {
+      {showTraderImportTools ? <section className="panel form-section comps-section"><div className="section-number">04</div><div><h2>Imported CSV evidence</h2><p className="muted">Select persisted sold records to add to this calculation. Rows without structured identity must be reviewed before they can be used.</p></div>
+        {importedEvidence.length === 0 ? <p className="muted">No imported real evidence yet. <Link className="positive" href="/data">Open Import Data</Link> to add sold records.</p> : <div className="comp-list">{importedEvidence.map((record) => {
           const selected = Boolean(selectedImported[record.id]);
           return <fieldset className="comp-card" key={record.id}><legend>{record.cardIdentity ? 'STRUCTURED CSV' : 'TITLE-ONLY CSV'}</legend>
             <label className="field imported-evidence-choice"><span><input type="checkbox" checked={selected} onChange={(event) => setSelectedImported((current) => ({ ...current, [record.id]: event.target.checked }))} /> Use in this analysis</span></label>
@@ -157,7 +163,8 @@ export function AnalyzeWorkspace() {
             {record.cardIdentity ? <p className="positive">STRUCTURED IDENTITY AVAILABLE</p> : <label className="field imported-evidence-choice"><span><input type="checkbox" checked={Boolean(reviewedImported[record.id])} disabled={!selected} onChange={(event) => setReviewedImported((current) => ({ ...current, [record.id]: event.target.checked }))} /> I reviewed this listing title and confirm it identifies the target card.</span></label>}
           </fieldset>;
         })}</div>}
-      </section>
+        <Link className="secondary-button import-data-link" href="/data">Manage Import Data</Link>
+      </section> : null}
 
       <section className="submit-bar"><div><strong>Ready to run the evidence tape?</strong><span>Your inputs stay in place if validation or analysis fails.</span></div><button className="primary-button" type="submit" disabled={busy}>{busy ? 'ANALYZING…' : 'ANALYZE CARD →'}</button></section>
       {error ? <p className="notice error-box" role="alert">{error}</p> : null}

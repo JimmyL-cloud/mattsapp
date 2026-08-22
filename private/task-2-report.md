@@ -157,3 +157,16 @@ Verification:
 - `git diff --check` — passed; Windows line-ending conversion notices only.
 
 No database, deployment, schema, migration, or secret changes were made.
+
+## Session Sync Note
+
+For the next session, start with a `git` sync mindset before making more changes.
+
+Relevant follow-up context:
+
+- Canonical mattsapp root: `C:\Work\Projects\mattsapp(2)\mattsapp`
+- Verification status: `pnpm test`, `pnpm typecheck`, and `pnpm build` passed
+- Lint status: `pnpm lint` passed with existing non-blocking warnings only in `src/App.jsx`
+- `gstack` / `gbrain` path and bootstrap sync work is also active context for next time
+- Canonical workspace roots already aligned in docs: `C:\Work\ai\gstack` and `C:\Work\ai\gbrain`
+- Quick file map for mattsapp: `docs/onboarding/MATT-STARTER-INDEX.md`
