@@ -154,6 +154,7 @@ export class PostgresTradingLedger<
       cutoff: asDate(snapshot.capturedAt),
       currentPriceMinor: snapshot.modelMaximumMinor,
       currency: snapshot.currency,
+      inputSnapshot: { cardId: snapshot.cardId },
       result: {
         cardLabel: snapshot.cardLabel,
         fairValueMinor: snapshot.fairValueMinor.toString(),
@@ -382,7 +383,7 @@ export class PostgresTradingLedger<
     const currencies = new Set(holdings.map((holding) => holding.currency));
     if (currencies.size > 1) throw new Error('Portfolio totals require one currency');
     const costBasisMinor = holdings.reduce((sum, holding) => sum + holding.costBasisMinor, 0n);
-    const currentValueMinor = holdings.reduce((sum, holding) => sum + holding.currentValueMinor, 0n);
+    const currentValueMinor = holdings.reduce((sum, holding) => sum + holding.currentValueMinor!, 0n);
     return Object.freeze({
       summary: Object.freeze({
         holdingCount: holdings.length,

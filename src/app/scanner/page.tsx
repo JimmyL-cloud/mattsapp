@@ -1,14 +1,5 @@
-import { TerminalShell } from '@/components/terminal/terminal-shell';
-import { demoMarketRows } from '@/features/search/demo-market-rows';
-import { MarketScanner } from '@/features/search/market-scanner';
-import { requireOwner } from '@/lib/auth/require-owner';
-import './scanner.css';
+import { permanentRedirect } from 'next/navigation';
 
-export default async function ScannerPage() {
-  await requireOwner();
-  return (
-    <TerminalShell demoMode>
-      <MarketScanner rows={demoMarketRows} />
-    </TerminalShell>
-  );
+export default function ScannerPage() {
+  permanentRedirect('/history');
 }

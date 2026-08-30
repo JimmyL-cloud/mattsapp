@@ -19,7 +19,7 @@ function record(id: string, price: bigint, shipping: bigint, date: string, sourc
     listingTitle: 'DEMO / PLACEHOLDER — 2023 Panini Prizm #339 Silver PSA 10', status: 'SOLD', saleType: 'AUCTION',
     occurredAt: date, importedAt: '2026-08-10T14:00:00-04:00', freshnessAt: date, timezone: 'America/New_York',
     salePriceMinor: price, shippingMinor: shipping, buyerPremiumMinor: 0n, taxMinor: null, currency: 'USD',
-    fingerprint: `demo-${id}`, raw: { synthetic: true, id }, isDemo: true,
+    cardIdentity: target, fingerprint: `demo-${id}`, raw: { synthetic: true, id }, isDemo: true,
   };
 }
 

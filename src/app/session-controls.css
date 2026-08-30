@@ -1,0 +1,43 @@
+.terminal-header {
+  grid-template-columns: 160px 1fr auto;
+}
+
+.session-controls {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.logout-button {
+  border: 1px solid var(--line);
+  background: transparent;
+  color: var(--muted);
+  padding: 4px 7px;
+  cursor: pointer;
+}
+
+.logout-button:hover {
+  color: var(--green);
+  border-color: var(--green);
+}
+
+main,
+.panel,
+.analysis-grid > *,
+.scanner-grid > *,
+.portfolio-grid > *,
+.performance-grid > * {
+  min-width: 0;
+}
+
+.table-scroll {
+  max-width: 100%;
+  overflow-x: auto;
+  overscroll-behavior-inline: contain;
+}
+
+@media (max-width: 800px) {
+  .terminal-header > .session-controls {
+    display: none;
+  }
+}

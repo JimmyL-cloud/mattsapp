@@ -51,7 +51,7 @@ export function createDemoPortfolio() {
     });
   });
   return Object.freeze({
-    summary: store.getPortfolioSummary('DEMO-OWNER', 'DEMO_ONLY'),
+    summaries: Object.freeze([store.getPortfolioSummary('DEMO-OWNER', 'DEMO_ONLY')]),
     holdings: store.getHoldings('DEMO-OWNER', 'DEMO_ONLY'),
     decisions: Object.freeze(decisionRows),
   });
