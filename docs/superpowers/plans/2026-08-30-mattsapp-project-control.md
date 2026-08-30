@@ -391,7 +391,7 @@ Commit message: `docs: link initial recovery issue queue`.
 - [ ] **Step 1: Run document validation**
 
 Check:
-- no `TBD` or ambiguous placeholders;
+- no unresolved placeholder markers or ambiguous instructions;
 - all relative Markdown links resolve;
 - all YAML templates parse;
 - every active issue links required SOPs;
