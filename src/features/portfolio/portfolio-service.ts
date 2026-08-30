@@ -18,13 +18,21 @@ export type PortfolioHolding = Readonly<{
   cardLabel: string;
   acquiredAt: string;
   costBasisMinor: bigint;
-  currentValueMinor: bigint;
-  unrealizedProfitMinor: bigint;
+  currentValueMinor: bigint | null;
+  unrealizedProfitMinor: bigint | null;
   currency: string;
   recommendedSellWindowDays: number | null;
   staleAt: string | null;
   isDemo: boolean;
   closedAt: string | null;
+}>;
+
+export type PortfolioSummary = Readonly<{
+  holdingCount: number;
+  costBasisMinor: bigint;
+  currentValueMinor: bigint | null;
+  unrealizedProfitMinor: bigint | null;
+  currency: string;
 }>;
 
 type RecordDecisionInput = {
@@ -150,12 +158,12 @@ export class PortfolioStore {
       type: 'PURCHASE', amountMinor: input.amountMinor, currency: input.currency, source: input.source,
       occurredAt: input.occurredAt, reversesTransactionId: null, isDemo: previous.isDemo,
     });
-    const currentValueMinor = input.currentValueMinor ?? snapshot.fairValueMinor;
+    const currentValueMinor = input.currentValueMinor ?? null;
     const holding: PortfolioHolding = deepFreeze({
       id: input.holdingId, userId: previous.userId, decisionId: previous.id, snapshotId: snapshot.id,
       cardId: snapshot.cardId, cardLabel: snapshot.cardLabel, acquiredAt: input.occurredAt,
       costBasisMinor: input.amountMinor, currentValueMinor,
-      unrealizedProfitMinor: currentValueMinor - input.amountMinor, currency: input.currency,
+      unrealizedProfitMinor: currentValueMinor === null ? null : currentValueMinor - input.amountMinor, currency: input.currency,
       recommendedSellWindowDays: snapshot.recommendedSellWindowDays, staleAt: input.staleAt ?? null,
       isDemo: previous.isDemo, closedAt: null,
     });
@@ -210,12 +218,13 @@ export class PortfolioStore {
     const currencies = new Set(holdings.map((holding) => holding.currency));
     if (currencies.size > 1) throw new Error('Portfolio totals require one currency');
     const costBasisMinor = holdings.reduce((sum, holding) => sum + holding.costBasisMinor, 0n);
-    const currentValueMinor = holdings.reduce((sum, holding) => sum + holding.currentValueMinor, 0n);
+    const valued = holdings.filter((holding) => holding.currentValueMinor !== null);
+    const currentValueMinor = valued.length === holdings.length ? valued.reduce((sum, holding) => sum + holding.currentValueMinor!, 0n) : null;
     return deepFreeze({
       holdingCount: holdings.length,
       costBasisMinor,
       currentValueMinor,
-      unrealizedProfitMinor: currentValueMinor - costBasisMinor,
+      unrealizedProfitMinor: currentValueMinor === null ? null : currentValueMinor - costBasisMinor,
       currency: holdings[0]?.currency ?? 'USD',
     });
   }

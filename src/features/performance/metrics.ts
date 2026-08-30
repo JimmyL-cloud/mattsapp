@@ -8,6 +8,7 @@ type PerformanceFilters = {
   demoScope: DemoScope;
   horizons?: readonly number[];
   purchaseStatuses?: readonly PurchaseStatus[];
+  currency?: string;
 };
 
 function average(values: readonly number[]): number | null {
@@ -44,10 +45,21 @@ export function calculatePerformance(evaluations: readonly OutcomeEvaluation[], 
     row.userId === filters.userId
     && row.isDemo === (filters.demoScope === 'DEMO_ONLY')
     && (!filters.horizons?.length || filters.horizons.includes(row.horizonDays))
-    && (!filters.purchaseStatuses?.length || filters.purchaseStatuses.includes(row.purchaseStatus)),
+    && (!filters.purchaseStatuses?.length || filters.purchaseStatuses.includes(row.purchaseStatus))
+    && (!filters.currency || row.currency === filters.currency),
   );
   const matured = scoped.filter((row) => row.status === 'MATURED');
-  const realizedRows = matured.filter((row) => row.realizedProfitMinor !== null && row.actualAllInMinor !== null);
+  const currencies = new Set(matured.map((row) => row.currency));
+  if (currencies.size > 1) throw new Error('Performance requires a single currency filter');
+  const financialByDecision = new Map<string, OutcomeEvaluation>();
+  for (const row of matured) {
+    const current = financialByDecision.get(row.decisionId);
+    if (!current || Date.parse(row.evaluatedAt) > Date.parse(current.evaluatedAt) || (row.evaluatedAt === current.evaluatedAt && row.horizonDays > current.horizonDays)) {
+      financialByDecision.set(row.decisionId, row);
+    }
+  }
+  const financialRows = [...financialByDecision.values()];
+  const realizedRows = financialRows.filter((row) => row.realizedProfitMinor !== null && row.actualAllInMinor !== null);
   const realizedProfitMinor = realizedRows.reduce((sum, row) => sum + row.realizedProfitMinor!, 0n);
   const realizedCostMinor = realizedRows.reduce((sum, row) => sum + row.actualAllInMinor!, 0n);
   const percentageErrors = matured.flatMap((row) => row.modelAbsolutePercentageError === null ? [] : [row.modelAbsolutePercentageError]);
@@ -64,7 +76,7 @@ export function calculatePerformance(evaluations: readonly OutcomeEvaluation[], 
     incompleteCount: scoped.filter((row) => row.status === 'INCOMPLETE').length,
     invalidatedCount: scoped.filter((row) => row.status === 'INVALIDATED').length,
     maturedCount: matured.length,
-    purchasedCount: matured.filter((row) => row.purchaseStatus === 'PURCHASED').length,
+    purchasedCount: financialRows.filter((row) => row.purchaseStatus === 'PURCHASED').length,
     realizedProfitMinor,
     realizedCostMinor,
     realizedRoiBps: realizedCostMinor === 0n ? null : Number(realizedProfitMinor * 10_000n / realizedCostMinor),
@@ -72,8 +84,8 @@ export function calculatePerformance(evaluations: readonly OutcomeEvaluation[], 
     medianAbsoluteErrorMinor: median(matured.flatMap((row) => row.modelAbsoluteErrorMinor === null ? [] : [row.modelAbsoluteErrorMinor])),
     directionAccuracyPercent: rounded(directionRows.length ? directionRows.filter((row) => row.modelDirectionCorrect).length / directionRows.length * 100 : null),
     brierScore: brierScore === null ? null : Number(brierScore.toFixed(8)),
-    modelValueAddedMinor: matured.reduce((sum, row) => sum + (row.modelValueAddedMinor ?? 0n), 0n),
-    maximumDrawdownMinor: maximumDrawdown(matured),
+    modelValueAddedMinor: financialRows.reduce((sum, row) => sum + (row.modelValueAddedMinor ?? 0n), 0n),
+    maximumDrawdownMinor: maximumDrawdown(financialRows),
     calibration: calculateCalibration(matured),
     evaluations: Object.freeze(matured),
   });

@@ -1,0 +1,67 @@
+name: Implementation task
+description: Bounded application, infrastructure, test, or UI work
+title: "[TASK] "
+labels:
+  - needs-code-review
+body:
+  - type: markdown
+    attributes:
+      value: "Read docs/recovery/MASTER-ROADMAP.md, docs/operations/AGENT-SOP.md, and docs/operations/DEVELOPMENT-SOP.md before starting."
+  - type: input
+    id: task_id
+    attributes:
+      label: Roadmap task ID
+    validations:
+      required: true
+  - type: input
+    id: base
+    attributes:
+      label: Approved base branch
+      value: repair/mattsapp-test
+    validations:
+      required: true
+  - type: textarea
+    id: objective
+    attributes:
+      label: Objective and user-visible outcome
+    validations:
+      required: true
+  - type: textarea
+    id: dependencies
+    attributes:
+      label: Dependencies and approved decisions
+    validations:
+      required: true
+  - type: textarea
+    id: scope
+    attributes:
+      label: Files/components in scope and explicit non-goals
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+    validations:
+      required: true
+  - type: textarea
+    id: tests
+    attributes:
+      label: Required tests and validation commands
+    validations:
+      required: true
+  - type: textarea
+    id: impact
+    attributes:
+      label: Formula, data, migration, Vercel, Neon, and security impact
+    validations:
+      required: true
+  - type: checkboxes
+    id: handoff
+    attributes:
+      label: Handoff
+      options:
+        - label: I will not work directly on main.
+          required: true
+        - label: I will open a draft PR and complete the handoff template.
+          required: true

@@ -81,3 +81,42 @@ export function calculateFairValue(input: ValuationComp[]) {
   });
   return { lowMinor, centerMinor, highMinor, comps, totalWeight: total, tape };
 }
+
+export type ResaleDealSignal = 'RED' | 'AMBER' | 'GREEN';
+
+/**
+ * Scores the resale proposition, not the card's market value. A four point
+ * return difference is one score point, so the target return is always zero.
+ */
+export function calculateResaleDealScore(roiBps: number, targetRoiBps = 1_500) {
+  if (!Number.isFinite(roiBps)) throw new Error('ROI must be finite');
+  if (!Number.isFinite(targetRoiBps) || targetRoiBps < 0) throw new Error('Target ROI must be non-negative');
+  const rawScore = new Decimal(roiBps - targetRoiBps).div(400).toDecimalPlaces(0, Decimal.ROUND_HALF_UP).toNumber();
+  const score = Math.max(-10, Math.min(10, rawScore));
+  const signal: ResaleDealSignal = roiBps < 0 ? 'RED' : roiBps < targetRoiBps ? 'AMBER' : 'GREEN';
+  return Object.freeze({
+    score,
+    roiBps,
+    targetRoiBps,
+    signal,
+    formula: 'clamp(round((roi_bps-target_roi_bps)/400), -10, 10)',
+  });
+}
+
+/**
+ * Collector value is a factual comparison only. It deliberately has no
+ * recommendation or red/green signal because it excludes transaction costs.
+ */
+export function calculateCollectorValue(askingPriceMinor: bigint, fairCenterMinor: bigint) {
+  if (fairCenterMinor <= 0n) throw new Error('Fair value must be positive');
+  const differenceMinor = fairCenterMinor - askingPriceMinor;
+  const differencePercent = new Decimal(differenceMinor.toString()).div(fairCenterMinor.toString()).mul(100).toNumber();
+  return Object.freeze({
+    askingPriceMinor,
+    fairCenterMinor,
+    differenceMinor,
+    differencePercent,
+    signal: 'EVIDENCE_ONLY' as const,
+    formula: '(fair_center-card_only_asking_price)/fair_center',
+  });
+}
