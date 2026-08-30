@@ -10,7 +10,7 @@ import { addMoney, multiplyMoney, type Money } from '@/lib/money/money';
 import { assertSingleDemoScope } from '@/lib/demo/policy';
 import { calculateConfidence } from '@/lib/valuation/confidence';
 import { matchComp, type CompCandidate } from '@/lib/valuation/match-comp';
-import { calculateDealScore, calculateFairValue } from '@/lib/valuation/valuation';
+import { calculateCollectorValue, calculateFairValue, calculateResaleDealScore } from '@/lib/valuation/valuation';
 import { calculateScenario, type CostLine } from '@/lib/valuation/scenario';
 import type { FeeSchedule } from '@/lib/valuation/fees';
 import { projectAuctionClose } from '@/lib/valuation/auction';
@@ -45,7 +45,7 @@ export type RunAnalysisInput = {
   acquisitionCosts: CostLine[];
   fixedSellingCosts: CostLine[];
   returnAllowanceBps: number;
-  targetRoiBps: number;
+  targetRoiBps?: number;
   holdingDays: number;
   sellHistory: HistoricalNetObservation[];
   forecastHorizons: number[];
@@ -102,7 +102,7 @@ export function runAnalysis(input: RunAnalysisInput) {
     const exclusionCodes: string[] = [...match.exclusionCodes];
     if (postCutoff) exclusionCodes.push('POST_CUTOFF_RECORD');
     const automaticallyIncluded = match.eligibility === 'ELIGIBLE' && !postCutoff;
-    const manuallyIncluded = comp.manualIncluded === true && !postCutoff;
+    const manuallyIncluded = comp.manualIncluded;
     if (comp.manualIncluded !== undefined && !comp.overrideReason?.trim()) {
       throw new Error(`Override reason is required for ${comp.record.id}`);
     }
@@ -114,7 +114,12 @@ export function runAnalysis(input: RunAnalysisInput) {
       observedAllIn: observedAllIn(comp.record),
       automaticallyIncluded,
       manuallyIncluded,
-      included: automaticallyIncluded || manuallyIncluded,
+      // A deliberate exclusion is authoritative even if the matching rule
+      // would include the comp. Explicit inclusions still cannot bypass a
+      // post-cutoff record because that would introduce lookahead evidence.
+      included: manuallyIncluded === undefined
+        ? automaticallyIncluded
+        : manuallyIncluded && !postCutoff,
       exclusionCodes: Object.freeze(exclusionCodes),
       overrideReason: comp.overrideReason ?? null,
     });
@@ -132,14 +137,14 @@ export function runAnalysis(input: RunAnalysisInput) {
     match: comp.match.total,
     ageDays: comp.ageDays,
   })));
-  const dealScore = calculateDealScore(currentAllIn.minor, fairValue.centerMinor);
+  const collectorValue = calculateCollectorValue(input.currentOffer.priceOrBid.minor, fairValue.centerMinor);
   const totalWeight = fairValue.comps.reduce((sum, comp) => sum + comp.weight, 0);
   const effectiveSampleSize = totalWeight ** 2 / fairValue.comps.reduce((sum, comp) => sum + comp.weight ** 2, 0);
   const weightByCompId = new Map(fairValue.comps.map((comp) => [comp.id, comp.weight]));
-  const weightedMeanMatch = includedComps.reduce(
+  const weightedMeanMatch = Math.min(1, Math.max(0, includedComps.reduce(
     (sum, comp) => sum + comp.match.total * (weightByCompId.get(comp.record.id) ?? 0),
     0,
-  ) / totalWeight;
+  ) / totalWeight));
   const prices = includedComps.map((comp) => Number(comp.observedAllIn.minor));
   const priceMedian = median(prices);
   const normalizedMad = priceMedian === 0 ? 1 : median(prices.map((price) => Math.abs(price - priceMedian))) / priceMedian;
@@ -147,9 +152,9 @@ export function runAnalysis(input: RunAnalysisInput) {
   const confidence = calculateConfidence({
     effectiveSampleSize,
     weightedMeanMatch,
-    recentEvidenceShare: includedComps
+    recentEvidenceShare: Math.min(1, Math.max(0, includedComps
       .filter((comp) => comp.ageDays <= 180)
-      .reduce((sum, comp) => sum + (weightByCompId.get(comp.record.id) ?? 0), 0) / totalWeight,
+      .reduce((sum, comp) => sum + (weightByCompId.get(comp.record.id) ?? 0), 0) / totalWeight)),
     normalizedMedianAbsoluteDeviation: normalizedMad,
     matchedSalesPer90Days: includedComps.filter((comp) => comp.ageDays <= 90).length,
     distinctReliableSources: sourceKeys.size,
@@ -165,7 +170,7 @@ export function runAnalysis(input: RunAnalysisInput) {
     fixedSellingCosts: input.fixedSellingCosts,
     returnAllowanceBps: input.returnAllowanceBps,
     feeSchedule: input.feeSchedule,
-    targetRoiBps: input.targetRoiBps,
+    targetRoiBps: input.targetRoiBps ?? 1_500,
     holdingDays: input.holdingDays,
   });
   const forecasts = forecastNetValues({
@@ -205,18 +210,26 @@ export function runAnalysis(input: RunAnalysisInput) {
       historicalCloseMultipliers: input.currentOffer.historicalCloseMultipliers ?? [],
     })
     : null;
+  const resaleDeal = calculateResaleDealScore(scenario.roiBps, input.targetRoiBps ?? 1_500);
+  // Retained for callers during the Task 1 -> Task 2 transition. New callers
+  // should use resaleDeal and collectorValue explicitly.
+  const dealScore = Object.freeze({
+    ...resaleDeal,
+    discountPercent: collectorValue.differencePercent,
+  });
 
   const steps: Array<Omit<CalculationStep, 'sequence'>> = [
     ...fairValue.tape.steps.map(({ sequence, ...calculation }) => {
       void sequence;
       return calculation;
     }),
-    step('deal_score', 'Signed Deal Score', 'clamp(round(((fair_center-current_all_in)/fair_center)/0.04), -10, 10)', { fairCenter: fairValue.centerMinor, currentAllIn: currentAllIn.minor }, dealScore.score, 'signed score'),
+    step('collector_value', 'Collector value (evidence only)', collectorValue.formula, { cardOnlyAskingPrice: collectorValue.askingPriceMinor, fairCenter: collectorValue.fairCenterMinor }, { differenceMinor: collectorValue.differenceMinor, differencePercent: collectorValue.differencePercent, signal: collectorValue.signal }, 'comparison'),
     step('confidence', 'Evidence confidence', confidence.formula, { components: confidence.components, weights: confidence.weights, caps: [...confidence.caps] }, confidence.percent, 'percent'),
     ...scenario.steps.map(({ sequence, ...calculation }) => {
       void sequence;
       return calculation;
     }),
+    step('resale_deal', 'Resale deal score', resaleDeal.formula, { roiBps: resaleDeal.roiBps, targetRoiBps: resaleDeal.targetRoiBps }, { score: resaleDeal.score, signal: resaleDeal.signal }, 'signed score'),
     step('buy_timing', 'Buy Timing Outlook', 'minimum confidence-adjusted future entry versus current all-in and timing costs', { horizons: buyTiming.horizons.map((horizon) => ({ days: horizon.days, adjustedMinor: horizon.adjustedEntryCenter.minor, confidence: horizon.confidence })) }, buyTiming.action, 'recommendation'),
     step('sell_timing', 'Signed Sell Timing Score', 'clamp(round(((current_net-best_future_net)/current_net)/0.025), -10, 10)', { currentNet: scenario.expectedNetProceeds.minor, horizons: sellTiming.horizons.map((horizon) => ({ days: horizon.days, adjustedMinor: horizon.adjustedProjectedNet.minor, supported: horizon.supported })) }, sellTiming.score, 'signed score'),
   ];
@@ -232,6 +245,8 @@ export function runAnalysis(input: RunAnalysisInput) {
     currentOffer: input.currentOffer,
     currentAllIn,
     fairValue: Object.freeze({ lowMinor: fairValue.lowMinor, centerMinor: fairValue.centerMinor, highMinor: fairValue.highMinor, currency: currentAllIn.currency }),
+    collectorValue,
+    resaleDeal,
     dealScore,
     confidence,
     scenario,

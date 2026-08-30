@@ -1,6 +1,6 @@
-import { and, eq, isNull } from 'drizzle-orm';
-import type { PgDatabase } from 'drizzle-orm/pg-core';
-import type { PgQueryResultHKT } from 'drizzle-orm/pg-core/session';
+import { and, eq, inArray, isNull, or } from 'drizzle-orm';
+import type { NeonHttpDatabase } from 'drizzle-orm/neon-http';
+import type { BatchItem } from 'drizzle-orm/batch';
 import type { NormalizedMarketRecord } from '@/features/market/types';
 import {
   marketSources,
@@ -11,6 +11,7 @@ import {
 import type * as databaseSchema from '@/lib/db/schema';
 import type { DemoScope } from '@/lib/demo/policy';
 import { recordIsInScope } from '@/lib/demo/policy';
+import { createCardIdentity, type CardIdentity } from '@/features/cards/card-identity';
 
 export type ImportPersistenceRow = Readonly<{
   rowNumber: number;
@@ -35,7 +36,13 @@ export type ImportBatchPersistence = Readonly<{
 export interface MarketRecordRepository {
   insert(record: NormalizedMarketRecord): Promise<NormalizedMarketRecord>;
   persistImportBatch(input: ImportBatchPersistence): Promise<void>;
-  list(input: { scope: DemoScope }): Promise<readonly NormalizedMarketRecord[]>;
+  list(input: { scope: DemoScope; userId?: string; limit?: number; offset?: number }): Promise<readonly NormalizedMarketRecord[]>;
+  getManyByIds(input: { scope: DemoScope; userId: string; ids: readonly string[] }): Promise<readonly NormalizedMarketRecord[]>;
+  findDuplicateKeys(input: { scope: DemoScope; userId: string; sourceKey: string; sourceRecordIds: readonly string[]; fingerprints: readonly string[] }): Promise<{ sourceRecordIds: ReadonlySet<string>; fingerprints: ReadonlySet<string> }>;
+}
+
+export class MarketRecordDuplicateError extends Error {
+  constructor() { super('A concurrent import committed one or more of these records'); this.name = 'MarketRecordDuplicateError'; }
 }
 
 export class InMemoryMarketRecordRepository implements MarketRecordRepository {
@@ -52,13 +59,37 @@ export class InMemoryMarketRecordRepository implements MarketRecordRepository {
   }
 
   async persistImportBatch(input: ImportBatchPersistence): Promise<void> {
+    if (input.records.some((record) => this.#records.has(record.id))) throw new MarketRecordDuplicateError();
     for (const record of input.records) await this.insert(record);
   }
 
-  async list(input: { scope: DemoScope }): Promise<readonly NormalizedMarketRecord[]> {
+  async list(input: { scope: DemoScope; userId?: string; limit?: number; offset?: number }): Promise<readonly NormalizedMarketRecord[]> {
     return [...this.#records.values()].filter((record) =>
-      recordIsInScope(record.isDemo, input.scope),
-    );
+      recordIsInScope(record.isDemo, input.scope) && (!input.userId || record.userId === input.userId),
+    ).slice(input.offset ?? 0, (input.offset ?? 0) + (input.limit ?? 200));
+  }
+
+  async getManyByIds(input: { scope: DemoScope; userId: string; ids: readonly string[] }): Promise<readonly NormalizedMarketRecord[]> {
+    const ids = new Set(input.ids);
+    return [...this.#records.values()].filter((record) => ids.has(record.id) && record.userId === input.userId && recordIsInScope(record.isDemo, input.scope));
+  }
+
+  async findDuplicateKeys(input: { scope: DemoScope; userId: string; sourceKey: string; sourceRecordIds: readonly string[]; fingerprints: readonly string[] }) {
+    const rows = [...this.#records.values()].filter((record) => record.userId === input.userId && recordIsInScope(record.isDemo, input.scope));
+    return {
+      sourceRecordIds: new Set(rows.filter((record) => record.sourceKey === input.sourceKey && record.sourceRecordId && input.sourceRecordIds.includes(record.sourceRecordId)).map((record) => record.sourceRecordId!)),
+      fingerprints: new Set(rows.filter((record) => input.fingerprints.includes(record.fingerprint)).map((record) => record.fingerprint)),
+    };
+  }
+}
+
+function identityFromRaw(raw: Readonly<Record<string, unknown>>): CardIdentity | null {
+  const stored = raw.__card_identity;
+  if (!stored || typeof stored !== 'object') return null;
+  try {
+    return createCardIdentity(stored as Parameters<typeof createCardIdentity>[0]);
+  } catch {
+    return null;
   }
 }
 
@@ -90,18 +121,15 @@ function toNormalizedRecord(
     buyerPremiumMinor: row.buyerPremiumMinor,
     taxMinor: row.taxMinor,
     currency: row.currency,
+    cardIdentity: identityFromRaw(row.raw),
     fingerprint: row.fingerprint,
     raw: Object.freeze({ ...row.raw }),
     isDemo: row.isDemo,
   });
 }
 
-export class PostgresMarketRecordRepository<
-  TQueryResult extends PgQueryResultHKT,
-> implements MarketRecordRepository {
-  constructor(
-    private readonly database: PgDatabase<TQueryResult, typeof databaseSchema>,
-  ) {}
+export class PostgresMarketRecordRepository implements MarketRecordRepository {
+  constructor(private readonly database: NeonHttpDatabase<typeof databaseSchema>) {}
 
   async insert(record: NormalizedMarketRecord): Promise<NormalizedMarketRecord> {
     await this.ensureSource(record.sourceKey, record.sourceLabel);
@@ -110,8 +138,11 @@ export class PostgresMarketRecordRepository<
   }
 
   async persistImportBatch(input: ImportBatchPersistence): Promise<void> {
-    await this.ensureSource(input.sourceKey, input.sourceLabel);
-    await this.database.insert(rawImportBatches).values({
+    const sourceWrite = this.database.insert(marketSources).values({
+      key: input.sourceKey, name: input.sourceLabel, connectionStatus: 'MANUAL', adapterVersion: '1',
+      statusMessage: 'User-provided import; no live marketplace access implied',
+    }).onConflictDoUpdate({ target: marketSources.key, set: { name: input.sourceLabel, connectionStatus: 'MANUAL', statusMessage: 'User-provided import; no live marketplace access implied' } });
+    const batchWrite = this.database.insert(rawImportBatches).values({
       id: input.batchId,
       userId: input.userId,
       sourceKey: input.sourceKey,
@@ -123,8 +154,9 @@ export class PostgresMarketRecordRepository<
     });
 
     const rawIds = new Map<number, string>();
+    const writes: [BatchItem<'pg'>, ...BatchItem<'pg'>[]] = [sourceWrite, batchWrite];
     if (input.rows.length) {
-      await this.database.insert(rawMarketRecords).values(input.rows.map((row) => {
+      writes.push(this.database.insert(rawMarketRecords).values(input.rows.map((row) => {
         const id = `${input.batchId}:row:${row.rowNumber}`;
         rawIds.set(row.rowNumber, id);
         return {
@@ -143,26 +175,56 @@ export class PostgresMarketRecordRepository<
           importedAt: toDate(input.importedAt),
           isDemo: input.isDemo,
         };
-      }));
+      })));
     }
 
     if (input.records.length) {
-      await this.database.insert(normalizedMarketRecords).values(input.records.map((record) => {
+      writes.push(this.database.insert(normalizedMarketRecords).values(input.records.map((record) => {
         const reportRow = input.rows.find((row) => row.recordId === record.id);
         return this.recordValues(record, reportRow ? rawIds.get(reportRow.rowNumber) ?? null : null);
-      }));
+      })));
+    }
+    try { await this.database.batch(writes); }
+    catch (error) {
+      if (typeof error === 'object' && error !== null && 'code' in error && error.code === '23505') throw new MarketRecordDuplicateError();
+      throw error;
     }
   }
 
-  async list(input: { scope: DemoScope }): Promise<readonly NormalizedMarketRecord[]> {
+  async list(input: { scope: DemoScope; userId?: string; limit?: number; offset?: number }): Promise<readonly NormalizedMarketRecord[]> {
+    const conditions = [
+      eq(normalizedMarketRecords.isDemo, input.scope === 'DEMO_ONLY'),
+      isNull(normalizedMarketRecords.deletedAt),
+      ...(input.userId ? [eq(normalizedMarketRecords.userId, input.userId)] : []),
+    ];
     const rows = await this.database
       .select()
       .from(normalizedMarketRecords)
-      .where(and(
-        eq(normalizedMarketRecords.isDemo, input.scope === 'DEMO_ONLY'),
-        isNull(normalizedMarketRecords.deletedAt),
-      ));
+      .where(and(...conditions))
+      .limit(input.limit ?? 200)
+      .offset(input.offset ?? 0);
     return Object.freeze(rows.map(toNormalizedRecord));
+  }
+
+  async getManyByIds(input: { scope: DemoScope; userId: string; ids: readonly string[] }): Promise<readonly NormalizedMarketRecord[]> {
+    if (!input.ids.length) return [];
+    const rows = await this.database.select().from(normalizedMarketRecords).where(and(
+      eq(normalizedMarketRecords.userId, input.userId), eq(normalizedMarketRecords.isDemo, input.scope === 'DEMO_ONLY'),
+      isNull(normalizedMarketRecords.deletedAt), inArray(normalizedMarketRecords.id, [...input.ids]),
+    ));
+    return Object.freeze(rows.map(toNormalizedRecord));
+  }
+
+  async findDuplicateKeys(input: { scope: DemoScope; userId: string; sourceKey: string; sourceRecordIds: readonly string[]; fingerprints: readonly string[] }) {
+    const duplicateCondition = or(
+      ...(input.sourceRecordIds.length ? [and(eq(normalizedMarketRecords.sourceKey, input.sourceKey), inArray(normalizedMarketRecords.sourceRecordId, [...input.sourceRecordIds]))] : []),
+      ...(input.fingerprints.length ? [inArray(normalizedMarketRecords.fingerprint, [...input.fingerprints])] : []),
+    );
+    if (!duplicateCondition) return { sourceRecordIds: new Set<string>(), fingerprints: new Set<string>() };
+    const rows = await this.database.select({ sourceRecordId: normalizedMarketRecords.sourceRecordId, fingerprint: normalizedMarketRecords.fingerprint }).from(normalizedMarketRecords).where(and(
+      eq(normalizedMarketRecords.userId, input.userId), eq(normalizedMarketRecords.isDemo, input.scope === 'DEMO_ONLY'), isNull(normalizedMarketRecords.deletedAt), duplicateCondition,
+    ));
+    return { sourceRecordIds: new Set(rows.flatMap((row) => row.sourceRecordId ? [row.sourceRecordId] : [])), fingerprints: new Set(rows.map((row) => row.fingerprint)) };
   }
 
   private async ensureSource(sourceKey: string, sourceLabel: string): Promise<void> {
