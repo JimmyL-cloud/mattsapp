@@ -44,7 +44,7 @@ describe('ManualAnalysisService', () => {
 
   it('uses the owner setting when the request omits the target ROI', async () => {
     const repository = new InMemoryAnalysisWorkflowRepository();
-    await repository.updateSettings('owner-1', 2_000);
+    await repository.updateSettings('owner-1', { targetRoiBps: 2_000, showTraderImportTools: false });
     const analysis = await new ManualAnalysisService(repository).create('owner-1', request, new Date('2026-08-12T00:00:00Z'));
     expect(analysis.input.targetRoiBps).toBe(2_000);
   });
