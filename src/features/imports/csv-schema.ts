@@ -1,6 +1,7 @@
 import Decimal from 'decimal.js';
 import { z } from 'zod';
 import type { MarketRecordStatus, MarketSaleType } from '@/features/market/types';
+import { createCardIdentity, type CardIdentity } from '@/features/cards/card-identity';
 
 export type ImportErrorCode =
   | 'MISSING_FIELD'
@@ -37,6 +38,7 @@ export type ValidatedImportRow = Readonly<{
   status: MarketRecordStatus;
   occurredAt: string;
   timezone: string;
+  cardIdentity: CardIdentity | null;
 }>;
 
 const saleTypes = ['AUCTION', 'FIXED_PRICE', 'ACCEPTED_OFFER', 'LOCAL', 'TRADE'] as const;
@@ -143,6 +145,7 @@ export function validateImportRow(
     errors.push({ code: 'INVALID_TIMEZONE', field: 'timezone', message: 'timezone must be a valid IANA timezone' });
   }
 
+  const cardIdentity = csvCardIdentity(row, errors);
   if (errors.length > 0 || salePriceMinor === null) return { value: null, errors };
 
   return {
@@ -159,7 +162,48 @@ export function validateImportRow(
       status: statusRaw as MarketRecordStatus,
       occurredAt,
       timezone,
+      cardIdentity,
     },
     errors,
   };
+}
+
+function optionalNumber(row: RawImportRow, field: string, errors: ImportRowError[]): number | null {
+  const raw = optionalValue(row, field);
+  if (raw === null) return null;
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed)) {
+    errors.push({ code: 'MISSING_FIELD', field, message: `${field} must be numeric when provided` });
+    return null;
+  }
+  return parsed;
+}
+
+function csvCardIdentity(row: RawImportRow, errors: ImportRowError[]): CardIdentity | null {
+  const playerName = optionalValue(row, 'player_name');
+  const identityColumns = ['sport', 'player_name', 'year', 'brand', 'set_name', 'card_number', 'parallel', 'condition', 'grading_company', 'grade'];
+  if (!identityColumns.some((field) => optionalValue(row, field) !== null)) return null;
+  if (!playerName) {
+    errors.push({ code: 'MISSING_FIELD', field: 'player_name', message: 'player_name is required when CSV identity fields are used' });
+    return null;
+  }
+  const condition = optionalValue(row, 'condition')?.toUpperCase() ?? null;
+  if (condition !== null && condition !== 'RAW' && condition !== 'GRADED') {
+    errors.push({ code: 'MISSING_FIELD', field: 'condition', message: 'condition must be RAW or GRADED when provided' });
+    return null;
+  }
+  try {
+    return createCardIdentity({
+      sport: optionalValue(row, 'sport') ?? 'football', playerName, canonicalPlayerId: null, teamShown: null,
+      year: optionalNumber(row, 'year', errors), manufacturer: null, brand: optionalValue(row, 'brand'),
+      setName: optionalValue(row, 'set_name'), subset: null, cardNumber: optionalValue(row, 'card_number'),
+      rookie: null, parallel: optionalValue(row, 'parallel'), color: null, serialNumber: null,
+      serialDenominator: null, autographType: 'NONE', memorabiliaType: 'NONE',
+      raw: condition === null ? null : condition === 'RAW', gradingCompanyKey: optionalValue(row, 'grading_company'),
+      grade: optionalNumber(row, 'grade', errors), qualifiers: [],
+    });
+  } catch (error) {
+    errors.push({ code: 'MISSING_FIELD', field: 'player_name', message: error instanceof Error ? error.message : 'Invalid card identity' });
+    return null;
+  }
 }

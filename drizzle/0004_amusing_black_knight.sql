@@ -1,0 +1,1 @@
+ALTER TABLE "user_settings" ADD COLUMN "show_trader_import_tools" boolean DEFAULT false NOT NULL;
