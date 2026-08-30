@@ -55,7 +55,7 @@ describe('authenticated analysis workflow routes', () => {
 
     const ownerBSettings = await (await settings.GET(request('http://test/api/settings', 'owner-b'))).json();
     expect(ownerBSettings.settings.targetRoiBps).toBe(1_500);
-    expect((await settings.PATCH(request('http://test/api/settings', 'owner-b', { method: 'PATCH', body: JSON.stringify({ targetRoiBps: 1_800 }), headers: { 'content-type': 'application/json' } }))).status).toBe(200);
+    expect((await settings.PATCH(request('http://test/api/settings', 'owner-b', { method: 'PATCH', body: JSON.stringify({ targetRoiBps: 1_800, showTraderImportTools: false }), headers: { 'content-type': 'application/json' } }))).status).toBe(200);
     expect((await repository.getSettings('owner-a')).targetRoiBps).toBe(2_000);
 
     expect((await (await watchlist.GET(request('http://test/api/watchlist', 'owner-b'))).json()).watchlist).toEqual([]);
