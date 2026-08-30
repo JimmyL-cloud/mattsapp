@@ -34,21 +34,21 @@ Deliver a trustworthy, reproducible, explainable sports-card valuation function 
 
 | ID | Phase | Objective | Dependencies | Recommended owner | Status | Issue |
 |---|---:|---|---|---|---:|---|
-| REC-001 | 0 | Inventory NotebookLM, Drive, GitHub, Vercel, Neon, and local artifacts | None | Codex | ACTIVE | Not created |
-| REC-002 | 0 | Compute hashes and map duplicate groups | REC-001 | Codex | NOT STARTED | Not created |
-| REC-003 | 0 | Export Google-native originals into durable formats | REC-001 | Jimmy + Codex | NOT STARTED | Not created |
-| OPS-001 | 0 | Establish agent SOPs, templates, and handoff rules | None | Codex | ACTIVE | Not created |
-| AUD-001 | 1 | Audit the existing TypeScript valuation implementation | OPS-001 | Jules | NOT STARTED | Not created |
-| FRM-001 | 1 | Build the canonical formula source map | REC-001, REC-002 | Codex + Hermes | NOT STARTED | Not created |
-| FRM-002 | 1 | Write and review the canonical formula specification | FRM-001, AUD-001 | Codex + Hermes + Jimmy | NOT STARTED | Not created |
-| FRM-003 | 1 | Map approved formulas to TypeScript and tests | FRM-002, AUD-001 | Jules + Codex | NOT STARTED | Not created |
+| REC-001 | 0 | Inventory NotebookLM, Drive, GitHub, Vercel, Neon, and local artifacts | None | Codex | ACTIVE | [#2](https://github.com/JimmyL-cloud/mattsapp/issues/2) |
+| REC-002 | 0 | Compute hashes and map duplicate groups | REC-001 | Codex | ACTIVE | [#3](https://github.com/JimmyL-cloud/mattsapp/issues/3) |
+| REC-003 | 0 | Export Google-native originals into durable formats | REC-001 | Jimmy + Codex | NOT STARTED | [#4](https://github.com/JimmyL-cloud/mattsapp/issues/4) |
+| OPS-001 | 0 | Establish agent SOPs, templates, and handoff rules | None | Codex | ACTIVE | [#5](https://github.com/JimmyL-cloud/mattsapp/issues/5) |
+| AUD-001 | 1 | Audit the existing TypeScript valuation implementation | OPS-001 | Jules | NOT STARTED | [#6](https://github.com/JimmyL-cloud/mattsapp/issues/6) |
+| FRM-001 | 1 | Build the canonical formula source map | REC-001, REC-002 | Codex + Hermes | NOT STARTED | [#7](https://github.com/JimmyL-cloud/mattsapp/issues/7) |
+| FRM-002 | 1 | Write and review the canonical formula specification | FRM-001, AUD-001 | Codex + Hermes + Jimmy | NOT STARTED | [#8](https://github.com/JimmyL-cloud/mattsapp/issues/8) |
+| FRM-003 | 1 | Map approved formulas to TypeScript and tests | FRM-002, AUD-001 | Jules + Codex | NOT STARTED | [#9](https://github.com/JimmyL-cloud/mattsapp/issues/9) |
 | VAL-001 | 2 | Define the typed valuation input/output contract | FRM-002 | Codex | NOT STARTED | Not created |
 | VAL-002 | 2 | Create approved golden valuation fixtures | FRM-002, VAL-001 | Hermes + Codex | NOT STARTED | Not created |
 | VAL-003 | 2 | Implement the deterministic valuation pipeline | VAL-001, VAL-002, FRM-003 | Codex/Jules | NOT STARTED | Not created |
 | VAL-004 | 2 | Implement replayable calculation tape | VAL-003 | Codex/Jules | NOT STARTED | Not created |
-| INF-001 | 0/3 | Inventory Vercel and diagnose failing production deployments | OPS-001 | Codex | NOT STARTED | Not created |
-| INF-002 | 0/3 | Identify Neon resources and create a verified backup/restore path | OPS-001, owner access | Jimmy + Codex | NOT STARTED | Not created |
-| INF-003 | 3 | Map development, preview, and production environments | INF-001, INF-002 | Codex | NOT STARTED | Not created |
+| INF-001 | 0/3 | Inventory Vercel and diagnose failing production deployments | OPS-001 | Codex | NOT STARTED | [#10](https://github.com/JimmyL-cloud/mattsapp/issues/10) |
+| INF-002 | 0/3 | Identify Neon resources and create a verified backup/restore path | OPS-001, owner access | Jimmy + Codex | NOT STARTED | [#11](https://github.com/JimmyL-cloud/mattsapp/issues/11) |
+| INF-003 | 3 | Map development, preview, and production environments | INF-001, INF-002 | Codex | NOT STARTED | [#12](https://github.com/JimmyL-cloud/mattsapp/issues/12) |
 | UI-001 | 4 | Define terminal information architecture | VAL-001, VAL-004 | Codex + Jimmy | NOT STARTED | Not created |
 | REL-001 | 5 | Execute recovery release gate and promotion review | All phase exit gates | Codex + Jimmy | NOT STARTED | Not created |
 
