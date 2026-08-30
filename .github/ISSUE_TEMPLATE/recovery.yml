@@ -1,0 +1,82 @@
+name: Recovery and inventory
+description: Preserve, inventory, export, or reconcile recovered project material
+title: "[REC] "
+labels:
+  - P1-recovery
+body:
+  - type: markdown
+    attributes:
+      value: "Read docs/recovery/MASTER-ROADMAP.md, docs/operations/AGENT-SOP.md, and docs/operations/RECOVERY-SOP.md before starting."
+  - type: input
+    id: task_id
+    attributes:
+      label: Roadmap task ID
+      placeholder: REC-001
+    validations:
+      required: true
+  - type: dropdown
+    id: source
+    attributes:
+      label: Source system
+      options:
+        - NotebookLM
+        - Google Drive
+        - GitHub
+        - Vercel
+        - Neon
+        - Local recovery
+        - Multiple
+    validations:
+      required: true
+  - type: textarea
+    id: objective
+    attributes:
+      label: Objective
+    validations:
+      required: true
+  - type: textarea
+    id: originals
+    attributes:
+      label: Immutable originals and stable source IDs
+      description: List exact files, URLs, Drive IDs, project IDs, or commit SHAs.
+    validations:
+      required: true
+  - type: textarea
+    id: dependencies
+    attributes:
+      label: Dependencies
+    validations:
+      required: true
+  - type: textarea
+    id: deliverables
+    attributes:
+      label: Deliverables
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria and evidence
+    validations:
+      required: true
+  - type: dropdown
+    id: sensitivity
+    attributes:
+      label: Sensitivity
+      options:
+        - Public or nonsensitive
+        - Private project material
+        - Credentials or personal data may be present
+    validations:
+      required: true
+  - type: checkboxes
+    id: safety
+    attributes:
+      label: Recovery safety
+      options:
+        - label: I will preserve originals and will not delete uncertain material.
+          required: true
+        - label: I will not place secret values in GitHub.
+          required: true
+        - label: I will complete the agent handoff template.
+          required: true

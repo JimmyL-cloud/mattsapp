@@ -1,0 +1,83 @@
+name: Formula research or change
+description: Analyze, propose, review, implement, or verify valuation mathematics
+title: "[FORMULA] "
+labels:
+  - P0-formula
+  - needs-math-review
+body:
+  - type: markdown
+    attributes:
+      value: "Read docs/operations/AGENT-SOP.md and docs/operations/FORMULA-CHANGE-SOP.md. Do not silently alter formulas."
+  - type: input
+    id: task_id
+    attributes:
+      label: Roadmap task ID
+      placeholder: FRM-001
+    validations:
+      required: true
+  - type: dropdown
+    id: formula_state
+    attributes:
+      label: Formula state
+      options:
+        - RESEARCH
+        - PROPOSED
+        - REVIEWED
+        - APPROVED
+        - IMPLEMENTED
+        - VERIFIED
+    validations:
+      required: true
+  - type: textarea
+    id: sources
+    attributes:
+      label: Source asset IDs and citations
+    validations:
+      required: true
+  - type: textarea
+    id: symbols
+    attributes:
+      label: Symbols, units, ranges, and assumptions
+    validations:
+      required: true
+  - type: textarea
+    id: current
+    attributes:
+      label: Current documented or implemented behavior
+    validations:
+      required: true
+  - type: textarea
+    id: proposed
+    attributes:
+      label: Proposed behavior or review question
+    validations:
+      required: true
+  - type: textarea
+    id: fixtures
+    attributes:
+      label: Golden fixtures, tolerances, and boundary evidence
+    validations:
+      required: true
+  - type: textarea
+    id: reviewers
+    attributes:
+      label: Math reviewer, implementation owner, and dependencies
+    validations:
+      required: true
+  - type: textarea
+    id: non_goals
+    attributes:
+      label: Explicit non-goals
+    validations:
+      required: true
+  - type: checkboxes
+    id: governance
+    attributes:
+      label: Formula governance
+      options:
+        - label: Source claims and implementation behavior are distinguished.
+          required: true
+        - label: No production formula changes occur before APPROVED state.
+          required: true
+        - label: Calculation-tape impact is documented.
+          required: true
