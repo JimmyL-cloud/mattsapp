@@ -1,11 +1,13 @@
 import { betterAuth, type BetterAuthOptions } from 'better-auth';
 import { drizzleAdapter } from '@better-auth/drizzle-adapter';
 import { isAPIError } from 'better-auth/api';
+import { eq } from 'drizzle-orm';
 import { getDatabase } from '@/lib/db/client';
 import { authAccounts, authSessions, authVerifications, users } from '@/lib/db/schema';
 
 export type OwnerIdentity = Readonly<{ id: string; email: string }>;
 export type OwnerCredentials = Readonly<{ email: string; password: string }>;
+type OwnerLookup = (email: string) => Promise<{ id: string; email: string } | undefined>;
 
 export function configuredOwnerEmail(value: string | undefined = process.env.MATTSAPP_OWNER_EMAIL): string {
   const email = value?.trim().toLowerCase();
@@ -15,6 +17,14 @@ export function configuredOwnerEmail(value: string | undefined = process.env.MAT
 
 export function ownerMatches(email: string, configured: string | undefined = process.env.MATTSAPP_OWNER_EMAIL): boolean {
   return email.trim().toLowerCase() === configuredOwnerEmail(configured);
+}
+
+export async function resolveConfiguredOwner(
+  lookup: OwnerLookup,
+  configured: string | undefined = process.env.MATTSAPP_OWNER_EMAIL,
+): Promise<OwnerIdentity | null> {
+  const owner = await lookup(configuredOwnerEmail(configured));
+  return owner ? Object.freeze({ id: owner.id, email: owner.email }) : null;
 }
 
 function authOptions(): BetterAuthOptions {
@@ -73,10 +83,15 @@ export async function authenticateOwner(credentials: OwnerCredentials, headers: 
 
 export async function getOwnerSessionFromHeaders(headers: Headers): Promise<OwnerIdentity | null> {
   try {
-    if (e2eMode()) return hasE2eCookie(headers) ? Object.freeze({ id: 'e2e-owner', email: configuredOwnerEmail() }) : null;
-    const session = await getOwnerAuth().api.getSession({ headers });
-    if (!session?.user || !ownerMatches(session.user.email)) return null;
-    return Object.freeze({ id: session.user.id, email: session.user.email });
+    if (e2eMode() && hasE2eCookie(headers)) return Object.freeze({ id: 'e2e-owner', email: configuredOwnerEmail() });
+    return resolveConfiguredOwner(async (email) => {
+      const [owner] = await getDatabase()
+        .select({ id: users.id, email: users.email })
+        .from(users)
+        .where(eq(users.email, email))
+        .limit(1);
+      return owner;
+    });
   }
   catch (error) {
     console.error('Owner session lookup failed', error);
