@@ -46,7 +46,7 @@ describe('authenticated analysis workflow routes', () => {
       id: 'analysis:owner-a', snapshotId: 'snapshot:owner-a', decisionId: 'decision:owner-a', userId: 'owner-a', cardId: 'card:owner-a',
       cutoff: '2026-08-12T00:00:00.000Z', formulaVersion: 'test-v1', currentPriceMinor: 1n, currency: 'USD', input: {}, result: {}, evidence: [],
     });
-    await repository.updateSettings('owner-a', 2_000);
+    await repository.updateSettings('owner-a', { targetRoiBps: 2_000, showTraderImportTools: false });
     await repository.saveWatchlist({ id: 'watch:owner-a', userId: 'owner-a', cardId: 'card:owner-a', marketRecordId: null, notes: 'private', isStarred: true, createdAt: '2026-08-12T00:00:00.000Z' });
 
     expect((await analysisId.GET(request('http://test/api/analyses/analysis:owner-a', 'owner-b'), context('analysis:owner-a'))).status).toBe(404);
