@@ -1,0 +1,35 @@
+Session 1: Relational Database and Accounting Ledger Construction
+Objective: Establish the PostgreSQL database schema to support Dual-Layer Accounting (IAS 38) and strict type-hinted data contracts.
+4
+New Chat Prompt:
+"I am building 'mattsapp', a sports card valuation terminal. We are utilizing a Neon PostgreSQL database and Python's SQLModel. Generate the database schema and models for user_portfolios, card_assets, and transaction_history. You must strictly separate the accounting ledgers by including parallel columns for d_val (the auditable physical cost basis) and a_val (the commercial valuation index). Apply strict set theory constraints to the data models to prevent SQL injection or corrupted data inputs. Do not build any web routes; focus entirely on the database engine and the connection pool."
+Session 2: The Card Hedge API Ingestion
+Pipeline
+Objective: Connect the application to realtime market data without building complex web scrapers, utilizing modern enterprise
+API protocols.
+6
+New Chat Prompt:
+"I need a Python module for 'mattsapp' that interacts with the Card Hedge API to pull real-time sports card pricing and grading population reports. The Card Hedge API utilizes an OpenAPI 3.0 specification and simple X-API-Key header authentication for its endpoints. Construct an asynchronous Python request loop utilizing the httpx or aiohttp library to query the /v1/agent/cards/ prices-by-cert endpoint. Keep the memory complexity low (O(1)) and ensure the script gracefully handles missing data without crashing. Do not build the valuation math; simply return the JSON payload containing the card's historical price and dataset size."
+Session 3: The Integrated Value Score (Vs) and Actuarial Math
+Objective: Isolate the complex econometrics and behavioral psychology filters into a standalone mathematical engine to prevent the Al from confusing financial derivatives with standard e-commerce commodities.
+New Chat
+Prompt:
+"Construct the core mathematical valuation engine for 'mattsapp' in Python. You must implement the Integrated Value Score formula exactly as follows:
+Vs = Ph • (1 + rexcess) • C; • (1 + 0.15 • H, - 0.
+• The sports card market is heavily driven by irrational exuberance, speculative bubbles, and gaping holes in transaction history.
+Therefore, if the API data feed is missing variables for provenance or audit quality, the functions must automatically inject provisional baseline parameters of 1.2 (a 20% oremium) to ensure the formula
+computes deterministically. Enforce the strict condition that the commercial
+valuation can never fall below the auditable physical cost basis."
+Session 4: Psychological UI/UX and The
+"Slab" Wireframe
+Objective: Build the frontend interface that actively mitigates gambling psychology, herd mentality, and the favorite-longshot bias by forcing users to input structured financial variables. (Note: While UI/UX component structures rely on standard web development frameworks outside of the provided text, the psychological layout is derived directly from the condition economics of the hobby. New Chat Prompt:
+"Design a lean, serverless frontend wireframe for 'mattsapp'. To protect inexperienced collectors from emotional market hysteria, the interface must mirror the visual hierarchy of a graded card slab (e.g., PSA or SGC). Create a top-down input flow: 1) Year/Manufacturer, 2) Player Name, 3) Card Attributes/Parallels, 4) Grade/ Authenticator, 5) Certification Number, and
+6) Last Known Sale Price. The output display must present the data as a structured financial terminal, showing the calculated Vs score alongside the raw historical price to emphasize the card's true market-clearing value over speculative hype."
+Session 5: The API Gateway and Zero-Trust Security Routing
+Objective: Bind the frontend to the backend cloud functions using a secure microservices pattern that authenticates users and evaluates permissions in O (1) or 0 (log n) time.
+8
+New Chat Prompt:
+"Construct the API Gateway for 'mattsapp' using Python (FastAPI). This gateway will receive requests from the frontend, call the
+Card Hedge API module, pass the data through the valuation engine, and store the result in the PostgreSQL database. You must implement a Zero Trust Architecture posture ('Never trust, always verify'). Ensure that the endpoint logic includes Attribute-Based Access Control (ABAC) utilizing Boolean logic to confirm the user is authenticated before allowing them to query the valuation database. Include a Circuit Breaker pattern to fail fast if the external pricing API becomes unresponsive."
+Why This Schedule Protects the Project
+By siloing the development into these five phases, you prevent the coding agent from experiencing context dilution. When an Al is asked to build a web interface, handle database schema, and execute the complex calculus of the Vs formula simultaneously, it will inevitably default to writing basic, synchronous code that fails to address the uniaue illiauiditv and heteroskedasticitv of
