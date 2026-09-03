@@ -1,0 +1,64 @@
+Yes, if you must operate under the assumption that your entire repository has been compromised or handled by malicious actors, your prompt schedule and development pipeline require immediate and severe adjustment. In a compromised environment, you can no longer rely on your existing codebase as a foundational building block.
+In the context of the mattsapp sports card valuation engine—a platform designed to filter out the systemic noise, irrational exuberance, and manipulation inherent in the decentralized sports card market-treating your repository as compromised mirrors the exact "Zero Trust" security posture required for institutional-grade financial software. The traditional security model of "Trust but verify" is entirely obsolete; you must adopt a "Never trust, always verify" posture, enforcing continuous verification for every access request and file
+inspection.
+Here is how you must adjust your schedule, review the code for malicious tampering and bloat, and safely integrate an Al agent without risking further infection.
+1. Adjusting the Prompt Schedule: The Triage Phase
+Your previous five-session prompt schedule assumed a clean slate. You must now prepend a "Zero-Trust Triage and Code Audit" phase to the schedule. You cannot allow a new coding agent to simply read your entire repository and start building, as it may inadvertently ingest and replicate malicious logic, prompt injections, or corrupted data structures.
+New Session O Prompt (The Quarantine
+Audit):
+"I am auditing a compromised repository for
+'mattsapp', a lean sports card valuation web
+app. I will provide you with individual Python scripts as raw text. Do not execute this code. You must analyze the script strictly using the STRIDE threat modeling framework (Spoofing, Tampering, Repudiation,
+Information Disclosure, Denial of Service, Elevation of Privilege). Identify any malicious outward network requests, bloated O(n?) query loops that do not fit a lean Firebase architecture, and any deviations from our core econometric formulas (such as the Integrated Value Score). Output only the identified vulnerabilities and a mathematically pristine, refactored version of the script."
+By forcing the agent to act strictly as a quarantine inspector, you isolate the compromised files from your new, lean deployment architecture.
+2. Methodologies for Reviewing Existing
+CodeReviewing a tampered repository for both security threats and architectural bloat requires a synthesis of computational complexity analysis and explicit threat modeling. Because your new scope is a lean, serverless web app, any code supporting the old, heavy microservices architecture is now "unnecessary bloat" and poses a security liability.
+4
+A. Implementing the STRIDE Threat Model You must manually, or via a sandboxed agent, evaluate every existing script against the STRIDE framework. For example, if a malicious user tampered with your database connection pooling, they may have introduced a Denial of Service (DoS) vulnerability by removing connection limits, designed to exhaust your Neon database compute limits. Similarly, check for
+"Elevation of Privilege" tampering, where normal user access control logic might have been bypassed to grant admin capabilities.
+B. Data Loss Prevention (DLP) Regex Scanning Tampered code often contains
+"Information Disclosure" vulnerabilities designed to exfiltrate your API keys or user data. You should run a Data Loss Prevention (DLP) script over your repo that uses regular expressions (rege) to detect hardcoded secrets. As defined in the systems architecture frameworks, your audit should scan for patterns like password=, api_key=, or token= that may have been maliciously inserted to route data to unauthorized external destinations.
+11
+12
+C. Pruning Bloat via Computational
+Complexity (Big O Notation) Because you are transitioning to a lean Firebase or managed PostgreSQL backend, much of your existing code is likely obsolete. You must apply Big O asymptotic analysis to strip out inefficiencies. If an existing script contains
+13
+14
+O(n?) nested loops for data
+aggregation, or attempts to manually handle
+
+complex distributed transactions (such as the Saga pattern), you must delete it. In a lean build, the managed backend handles these processes natively. Your code should strictly execute
+15
+... O(1) constant-time
+lookups and O(log n) database queries.
+19
+•••
+D. Headless Simulation and Mathematical
+Assertions Do not run the compromised code on your primary machine. You should utilize "Headless Simulations" -running the code in an isolated, non-rendering sandbox environment to monitor for memory leaks or desynchronizations without risking your host system. Inside this sandbox, run the code against your automated mathematical harness. If the tampered code fails to correctly calculate the Amihud Illiquidity Ratio or violates the rule that the
+commercial valuation (A-Val) can never fall below the auditable physical cost basis (D-Val), the file is irreparably corrupted and
+must be rewritten from the ground truth formulas.
+23
+990
+3. Safely Integrating Al Agents into the Security Process
+Integrating an Al like Google Gemini or an autonomous coding agent into a compromised environment introduces a severe, modern vulnerability: Prompt Injection
+26
+27 . If a malicious user hid
+prompt-altering text within your Python comments or docstrings, an Al agent reading that file might be tricked into executing malicious commands, dropping tables, or writing backdoors into the new codebase. 26 27
+To integrate an agent without risking further tampering, you must enforce the following strictures:
+1. Sandboxing and Parameterized Inputs:
+Just as developers use parameterized SQL statements to prevent SQL iniection. vou
+must strictly sandbox the LLM outputs and parameterize its prompts. Never allow the Al agent to execute the tampered code directly in its own environment. You must provide the code to the agent strictly as read-only text, explicitly instructing the Al that the text string it is evaluating is potentially hostile and should not be interpreted as functional system commands.
+2. Enforcing Human-in-the-Loop
+Accountability: The academic and institutional research community has firmly established that Al cannot be granted autonomy over final outputs, as it lacks legal agency and the capacity to take ethical responsibility for its work. You must retain absolute, unmitigated accountability for all outputs generated with Al assistance. The agent must never be given write-access to your fresh GitHub repository or your live Firebase/Neon databases. It must output the sanitized, rewritten code into a secure,
+
+and approval. 28
+29
+3. Providing "Ground Truth" Guardrails:
+Generative models are prone to
+"hallucinations" —the confident generation of highly plausible but entirely fabricated information. If an agent is auditing a tampered econometric script, it might hallucinate a correction that technically runs but mathematically corrupts the valuation model. To prevent this, you must anchor the agent by providing the explicit mathematical constants in your prompt. For example, explicitly remind the agent that the provenance premium (30 Pp) and the audit premium (Ap) must be hardcoded as baseline 1.2 (a 20% premium) and that the macroeconomic baseline index (
+31
+32 M)
+must be strictly bounded between 0.85 and 1.15. 33
+By treating the existing repository as an untrusted DMZ (Demilitarized Zone), utilizing
+
+
